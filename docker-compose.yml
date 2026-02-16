@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      - APP_NAME=Finny
+      - PORT=8080
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_USER=finny
+      - DB_PASSWORD=secret
+      - DB_NAME=finny
+      - SERVER_TIMEOUT=30s
+    depends_on:
+      - db
+    networks:
+      - finny-net
+
+  db:
+    image: postgres:18-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=finny
+      - POSTGRES_PASSWORD=secret
+      - POSTGRES_DB=finny
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - finny-net
+
+networks:
+  finny-net:
+
+volumes:
+  postgres_data:
