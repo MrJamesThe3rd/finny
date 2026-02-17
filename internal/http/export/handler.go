@@ -95,7 +95,7 @@ func (h *Handler) metadata(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	emailBody := h.svc.GenerateEmailBody(items)
+	emailBody := h.svc.GenerateSummary(items)
 
 	txResponses := make([]transactionResponse, 0, len(items))
 	for _, item := range items {
@@ -137,7 +137,7 @@ func (h *Handler) download(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	emailBody := h.svc.GenerateEmailBody(items)
+	emailBody := h.svc.GenerateSummary(items)
 	if err := os.WriteFile(filepath.Join(tmpDir, "email_body.txt"), []byte(emailBody), 0o644); err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return

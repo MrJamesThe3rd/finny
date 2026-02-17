@@ -187,3 +187,17 @@ $RECYCLE.BIN/
 *.lnk
 
 # End of https://www.toptal.com/developers/gitignore/api/go,goland+all,windows,macos,linux
+
+### Project ###
+# Binaries
+/tui
+
+# Environment
+.env
+
+# Data files
+*.csv
+exports/
+
+# Plans
+docs/plans/

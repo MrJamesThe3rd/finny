@@ -1,38 +1,46 @@
 package view
 
 import (
-	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/table"
-	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/MrJamesThe3rd/finny/internal/transaction"
+)
+
+type listState int
+
+const (
+	listStateBrowse listState = iota
+	listStateEdit
 )
 
 type ListModel struct {
 	CommonModel
 	txService *transaction.Service
 
+	state listState
 	table table.Model
 	txs   []*transaction.Transaction
+	form  *huh.Form
 
-	// Edit Mode State
-	editMode     bool
-	descInput    textinput.Model
-	invoiceInput textinput.Model
-	focusIndex   int // 0: Desc, 1: Invoice
-
-	// Filtering State
-	statusFilterIdx int // 0: All, 1: Draft, 2: Pending, 3: Complete, 4: NoInvoice
-	dateFilterIdx   int // 0: All Time, 1: This Month, 2: Last Month
+	// Filter cycling
+	statusFilterIdx int
+	dateFilterIdx   int
 
 	filter  transaction.ListFilter
 	loading bool
 	err     error
+	status  string
+
+	// Form bindings
+	formDesc string
+	formURL  string
 }
 
 func NewListModel(txSvc *transaction.Service) ListModel {
@@ -62,21 +70,19 @@ func NewListModel(txSvc *transaction.Service) ListModel {
 		Bold(false)
 	t.SetStyles(s)
 
-	di := textinput.New()
-	di.Placeholder = "Description"
-	di.Width = 30
-
-	ii := textinput.New()
-	ii.Placeholder = "Invoice URL"
-	ii.Width = 30
-
 	return ListModel{
-		txService:    txSvc,
-		table:        t,
-		descInput:    di,
-		invoiceInput: ii,
-		filter:       transaction.ListFilter{},
+		txService: txSvc,
+		table:     t,
+		filter:    transaction.ListFilter{},
 	}
+}
+
+func (m ListModel) Title() string { return "Transactions List" }
+func (m ListModel) ShortHelp() string {
+	if m.state == listStateEdit {
+		return "Navigate form | Esc: cancel"
+	}
+	return "Esc: back | e: edit | s: status filter | d: date filter | r: refresh"
 }
 
 func (m ListModel) Init() tea.Cmd {
@@ -84,117 +90,189 @@ func (m ListModel) Init() tea.Cmd {
 }
 
 func (m ListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmd tea.Cmd
-
-	// Handle Edit Mode
-	if m.editMode {
-		switch msg := msg.(type) {
-		case tea.KeyMsg:
-			switch msg.String() {
-			case "esc":
-				m.editMode = false
-				m.table.Focus()
-
-				return m, nil
-			case "tab", "shift+tab":
-				m.focusIndex = (m.focusIndex + 1) % 2
-				if m.focusIndex == 0 {
-					m.descInput.Focus()
-					m.invoiceInput.Blur()
-				} else {
-					m.descInput.Blur()
-					m.invoiceInput.Focus()
-				}
-
-				return m, nil
-			case "enter":
-				// Save
-				return m, m.saveChangesCmd()
-			}
-		case saveTxMsg:
-			if msg.err != nil {
-				m.err = msg.err
-			} else {
-				m.editMode = false
-				m.table.Focus()
-				// Refresh list to show updates
-				return m, m.loadTxsCmd()
-			}
-		}
-
-		// Update inputs
-		if m.focusIndex == 0 {
-			m.descInput, cmd = m.descInput.Update(msg)
-		} else {
-			m.invoiceInput, cmd = m.invoiceInput.Update(msg)
-		}
-
-		return m, cmd
-	}
-
-	// Normal List Mode
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		switch msg.String() {
-		case "esc":
-			return m, Back
-		case "r":
-			m.loading = true
-			return m, m.loadTxsCmd()
-		case "e":
-			// Enter Edit Mode
-			sel := m.table.SelectedRow()
-			if len(sel) > 0 && len(m.txs) > 0 {
-				idx := m.table.Cursor()
-				if idx >= 0 && idx < len(m.txs) {
-					tx := m.txs[idx]
-					m.editMode = true
-					m.table.Blur()
-
-					m.descInput.SetValue(tx.Description)
-					m.descInput.Focus()
-					m.invoiceInput.Blur()
-					m.focusIndex = 0
-
-					if tx.Invoice != nil {
-						m.invoiceInput.SetValue(tx.Invoice.URL)
-					} else {
-						m.invoiceInput.SetValue("")
-					}
-
-					return m, nil
-				}
-			}
-		case "s": // Cycle Status
-			m.statusFilterIdx = (m.statusFilterIdx + 1) % 5
-			m.updateFilter()
-
-			return m, m.loadTxsCmd()
-		case "d": // Cycle Date
-			m.dateFilterIdx = (m.dateFilterIdx + 1) % 3
-			m.updateFilter()
-
-			return m, m.loadTxsCmd()
-		}
-
 	case loadListMsg:
 		m.loading = false
 		if msg.err != nil {
 			m.err = msg.err
 			return m, nil
 		}
-
 		m.txs = msg.txs
-		m.updateTable()
+		m.status = ""
+		m.refreshTable()
+		return m, nil
+
+	case listSaveMsg:
+		if msg.err != nil {
+			m.status = fmt.Sprintf("Error saving: %v", msg.err)
+		}
+		m.state = listStateBrowse
+		m.form = nil
+		m.table.Focus()
+		return m, m.loadTxsCmd()
+
+	case tea.WindowSizeMsg:
+		m.table.SetHeight(msg.Height - 10)
+		return m, nil
 	}
 
-	m.table, cmd = m.table.Update(msg)
+	switch m.state {
+	case listStateBrowse:
+		return m.updateBrowse(msg)
+	case listStateEdit:
+		return m.updateEdit(msg)
+	}
 
+	return m, nil
+}
+
+func (m ListModel) updateBrowse(msg tea.Msg) (tea.Model, tea.Cmd) {
+	keyMsg, ok := msg.(tea.KeyMsg)
+	if ok {
+		switch keyMsg.String() {
+		case "esc":
+			return m, Back
+		case "r":
+			m.loading = true
+			return m, m.loadTxsCmd()
+		case "e":
+			return m.enterEditMode()
+		case "s":
+			m.statusFilterIdx = (m.statusFilterIdx + 1) % 5
+			m.applyFilter()
+			return m, m.loadTxsCmd()
+		case "d":
+			m.dateFilterIdx = (m.dateFilterIdx + 1) % 3
+			m.applyFilter()
+			return m, m.loadTxsCmd()
+		}
+	}
+
+	var cmd tea.Cmd
+	m.table, cmd = m.table.Update(msg)
 	return m, cmd
 }
 
-func (m *ListModel) updateFilter() {
-	// Status
+func (m ListModel) enterEditMode() (tea.Model, tea.Cmd) {
+	idx := m.table.Cursor()
+	if idx < 0 || idx >= len(m.txs) {
+		return m, nil
+	}
+
+	tx := m.txs[idx]
+	m.formDesc = tx.Description
+	m.formURL = ""
+	if tx.Invoice != nil {
+		m.formURL = tx.Invoice.URL
+	}
+
+	m.form = huh.NewForm(
+		huh.NewGroup(
+			huh.NewInput().
+				Key("description").
+				Title("Description").
+				Value(&m.formDesc).
+				Validate(func(s string) error {
+					if strings.TrimSpace(s) == "" {
+						return fmt.Errorf("description cannot be empty")
+					}
+					return nil
+				}),
+
+			huh.NewInput().
+				Key("invoice_url").
+				Title("Invoice URL").
+				Placeholder("https://...").
+				Value(&m.formURL),
+		),
+	).WithWidth(45).WithShowHelp(false)
+
+	m.state = listStateEdit
+	m.table.Blur()
+	return m, m.form.Init()
+}
+
+func (m ListModel) updateEdit(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		if keyMsg.Type == tea.KeyEsc {
+			m.state = listStateBrowse
+			m.form = nil
+			m.table.Focus()
+			return m, nil
+		}
+	}
+
+	form, cmd := m.form.Update(msg)
+	if f, ok := form.(*huh.Form); ok {
+		m.form = f
+	}
+
+	if m.form.State != huh.StateCompleted {
+		return m, cmd
+	}
+
+	return m, m.saveCmd()
+}
+
+func (m ListModel) View() string {
+	if m.loading {
+		return lipgloss.NewStyle().Padding(2).Render("Loading transactions...")
+	}
+
+	if m.err != nil {
+		return lipgloss.NewStyle().Padding(2).Render(fmt.Sprintf("Error: %v", m.err))
+	}
+
+	statusLabels := []string{"All", "Draft", "Pending", "Complete", "No Invoice"}
+	dateLabels := []string{"All Time", "This Month", "Last Month"}
+
+	header := fmt.Sprintf(
+		"Filter: [s] Status: %s | [d] Date: %s",
+		activeStyle(statusLabels[m.statusFilterIdx]),
+		activeStyle(dateLabels[m.dateFilterIdx]),
+	)
+
+	tableView := lipgloss.NewStyle().
+		BorderStyle(lipgloss.NormalBorder()).
+		BorderForeground(lipgloss.Color("240")).
+		Render(m.table.View())
+
+	content := lipgloss.JoinVertical(lipgloss.Left,
+		lipgloss.NewStyle().PaddingBottom(1).Render(header),
+		tableView,
+	)
+
+	if m.state == listStateEdit && m.form != nil {
+		idx := m.table.Cursor()
+		rawDesc := ""
+		if idx >= 0 && idx < len(m.txs) {
+			rawDesc = m.txs[idx].RawDescription
+		}
+
+		panel := lipgloss.NewStyle().
+			Padding(1, 2).
+			BorderStyle(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("63")).
+			Width(48).
+			Render(
+				fmt.Sprintf("Edit Transaction\n\nOriginal: %s\n\n%s", rawDesc, m.form.View()),
+			)
+
+		content = lipgloss.JoinHorizontal(lipgloss.Top, content, panel)
+	}
+
+	if m.status != "" {
+		content = lipgloss.NewStyle().Faint(true).Render(m.status) + "\n" + content
+	}
+
+	return lipgloss.NewStyle().Padding(1).Render(content)
+}
+
+func activeStyle(s string) string {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Render(s)
+}
+
+func (m *ListModel) applyFilter() {
 	switch m.statusFilterIdx {
 	case 1:
 		m.filter.Status = new(transaction.StatusDraft)
@@ -208,118 +286,43 @@ func (m *ListModel) updateFilter() {
 		m.filter.Status = nil
 	}
 
-	// Date
 	now := time.Now()
-
-	var start, end *time.Time
-
 	switch m.dateFilterIdx {
-	case 1: // This Month
+	case 1:
 		s := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
 		e := s.AddDate(0, 1, 0).Add(-time.Nanosecond)
-		start, end = &s, &e
-	case 2: // Last Month
+		m.filter.StartDate = &s
+		m.filter.EndDate = &e
+	case 2:
 		s := time.Date(now.Year(), now.Month()-1, 1, 0, 0, 0, 0, now.Location())
 		e := s.AddDate(0, 1, 0).Add(-time.Nanosecond)
-		start, end = &s, &e
+		m.filter.StartDate = &s
+		m.filter.EndDate = &e
 	default:
-		start, end = nil, nil // All Time
+		m.filter.StartDate = nil
+		m.filter.EndDate = nil
 	}
-
-	m.filter.StartDate = start
-	m.filter.EndDate = end
 }
 
-func (m ListModel) View() string {
-	if m.loading {
-		return "Loading transactions..."
-	}
-
-	if m.err != nil {
-		return fmt.Sprintf("Error: %v", m.err)
-	}
-
-	tableView := lipgloss.NewStyle().
-		BorderStyle(lipgloss.NormalBorder()).
-		BorderForeground(lipgloss.Color("240")).
-		Render(m.table.View())
-
-	// Build Header with Filters
-	statusLabels := []string{"All", "Draft", "Pending", "Complete", "No Invoice"}
-	dateLabels := []string{"All Time", "This Month", "Last Month"}
-
-	header := fmt.Sprintf(
-		"Filter: [s] Status: %s | [d] Date: %s",
-		activeStyle(statusLabels[m.statusFilterIdx]),
-		activeStyle(dateLabels[m.dateFilterIdx]),
-	)
-
-	content := lipgloss.JoinVertical(lipgloss.Left,
-		lipgloss.NewStyle().PaddingBottom(1).Render(header),
-		tableView,
-	)
-
-	if m.editMode {
-		// Side Panel
-		idx := m.table.Cursor()
-
-		var rawDesc string
-
-		if idx >= 0 && idx < len(m.txs) {
-			rawDesc = m.txs[idx].RawDescription
-		}
-
-		form := fmt.Sprintf(
-			"Edit Transaction\n\nOriginal: %s\n\nDescription:\n%s\n\nInvoice URL:\n%s\n\n(Enter to Save, Esc to Cancel)",
-			rawDesc,
-			m.descInput.View(),
-			m.invoiceInput.View(),
-		)
-
-		panel := lipgloss.NewStyle().
-			Padding(1, 2).
-			BorderStyle(lipgloss.NormalBorder()).
-			BorderForeground(lipgloss.Color("63")).
-			Width(40).
-			Height(15).
-			Render(form)
-
-		content = lipgloss.JoinHorizontal(lipgloss.Top, content, panel)
-	}
-
-	return lipgloss.NewStyle().Padding(1).Render(
-		"Transactions List (ESC to back, r to refresh, e to edit)\n" +
-			content,
-	)
-}
-
-func activeStyle(s string) string {
-	return lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Render(s)
-}
-
-func (m *ListModel) updateTable() {
-	rows := []table.Row{}
-
+func (m *ListModel) refreshTable() {
+	rows := make([]table.Row, 0, len(m.txs))
 	for _, tx := range m.txs {
-		dateStr := tx.Date.Format("2006-01-02")
-		amountStr := fmt.Sprintf("%.2f", float64(tx.Amount)/100.0)
-
-		var invoiceURL string
+		invoiceURL := ""
 		if tx.Invoice != nil {
 			invoiceURL = tx.Invoice.URL
 		}
-
 		rows = append(rows, table.Row{
-			dateStr,
+			FormatDate(tx.Date),
 			string(tx.Status),
-			amountStr,
+			FormatAmount(tx.Amount),
 			tx.Description,
 			invoiceURL,
 		})
 	}
-
 	m.table.SetRows(rows)
 }
+
+// Messages
 
 type loadListMsg struct {
 	txs []*transaction.Transaction
@@ -328,43 +331,43 @@ type loadListMsg struct {
 
 func (m ListModel) loadTxsCmd() tea.Cmd {
 	return func() tea.Msg {
-		txs, err := m.txService.List(context.Background(), m.filter)
+		ctx, cancel := DbCtx()
+		defer cancel()
+
+		txs, err := m.txService.List(ctx, m.filter)
 		return loadListMsg{txs: txs, err: err}
 	}
 }
 
-type saveTxMsg struct {
+type listSaveMsg struct {
 	err error
 }
 
-func (m ListModel) saveChangesCmd() tea.Cmd {
+func (m ListModel) saveCmd() tea.Cmd {
 	idx := m.table.Cursor()
 	if idx < 0 || idx >= len(m.txs) {
 		return nil
 	}
 
 	tx := m.txs[idx]
-
-	newDesc := m.descInput.Value()
-	newInvoiceURL := m.invoiceInput.Value()
+	desc := m.formDesc
+	url := m.formURL
 
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := DbCtx()
 		defer cancel()
 
-		// 1. Update Description
-		tx.Description = newDesc
+		tx.Description = desc
 		if err := m.txService.Update(ctx, tx); err != nil {
-			return saveTxMsg{err: err}
+			return listSaveMsg{err: err}
 		}
 
-		// 2. Attach Invoice if provided
-		if newInvoiceURL != "" {
-			if err := m.txService.AttachInvoice(ctx, tx.ID, newInvoiceURL); err != nil {
-				return saveTxMsg{err: err}
+		if url != "" {
+			if err := m.txService.AttachInvoice(ctx, tx.ID, url); err != nil {
+				return listSaveMsg{err: err}
 			}
 		}
 
-		return saveTxMsg{err: nil}
+		return listSaveMsg{}
 	}
 }

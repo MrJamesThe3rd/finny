@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/MrJamesThe3rd/finny/internal/export"
@@ -17,32 +17,28 @@ import (
 type exportState int
 
 const (
-	stateSelectTimeframe exportState = iota
-	stateInputCustomDate
-	stateInputPath
-	stateExporting
-	stateResult
+	exportStateTimeframe exportState = iota
+	exportStatePath
+	exportStateExporting
+	exportStateResult
 )
 
 type ExportModel struct {
 	CommonModel
 	exportService *export.Service
 
-	state             exportState
-	err               error
-	selectedTimeframe Timeframe
+	state           exportState
+	err             error
+	timeframePicker TimeframePicker
 
-	// Custom Date Inputs
-	startDateInput textinput.Model
-	endDateInput   textinput.Model
-	dateFocusIndex int
+	startDate time.Time
+	endDate   time.Time
+	allTime   bool
 
-	// Path Input
-	pathInput textinput.Model
-
+	form    *huh.Form
+	path    string
 	spinner spinner.Model
-
-	emailBody string
+	summary string
 }
 
 func NewExportModel(svc *export.Service) ExportModel {
@@ -50,273 +46,168 @@ func NewExportModel(svc *export.Service) ExportModel {
 	s.Spinner = spinner.Dot
 	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
 
-	si := textinput.New()
-	si.Placeholder = "YYYY-MM-DD"
-	si.Width = 20
-	si.Prompt = "Start Date: "
-
-	ei := textinput.New()
-	ei.Placeholder = "YYYY-MM-DD"
-	ei.Width = 20
-	ei.Prompt = "End Date:   "
-
-	pi := textinput.New()
-	pi.Placeholder = "./exports"
-	pi.Width = 30
-	pi.SetValue("./exports")
-	pi.Prompt = "Output Path: "
-	pi.Focus()
-
 	return ExportModel{
-		exportService:     svc,
-		state:             stateSelectTimeframe,
-		selectedTimeframe: TimeframeThisMonth,
-		startDateInput:    si,
-		endDateInput:      ei,
-		pathInput:         pi,
-		spinner:           s,
-		dateFocusIndex:    0,
+		exportService:   svc,
+		state:           exportStateTimeframe,
+		timeframePicker: NewTimeframePicker(TimeframeThisMonth),
+		path:            "./exports",
+		spinner:         s,
 	}
+}
+
+func (m ExportModel) Title() string { return "Export Transactions" }
+
+func (m ExportModel) ShortHelp() string {
+	switch m.state {
+	case exportStateResult:
+		return "Esc: back to menu"
+	case exportStateExporting:
+		return "Exporting..."
+	}
+	return "Esc: back | Enter: confirm"
 }
 
 func (m ExportModel) Init() tea.Cmd {
-	return textinput.Blink
+	return nil
 }
 
 func (m ExportModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	// Clear temporary errors on user interaction in input states
-	if m.err != nil && m.state != stateExporting && m.state != stateResult {
-		if _, ok := msg.(tea.KeyMsg); ok {
-			m.err = nil
+	if tfMsg, ok := msg.(TimeframeSelectedMsg); ok {
+		m.startDate = tfMsg.Start
+		m.endDate = tfMsg.End
+		m.allTime = tfMsg.All
+		m.form = m.buildPathForm()
+		m.state = exportStatePath
+		return m, m.form.Init()
+	}
+
+	switch m.state {
+	case exportStateTimeframe:
+		return m.updateTimeframe(msg)
+	case exportStatePath:
+		return m.updatePath(msg)
+	case exportStateExporting:
+		return m.updateExporting(msg)
+	case exportStateResult:
+		return m.updateResult(msg)
+	}
+
+	return m, nil
+}
+
+func (m ExportModel) updateTimeframe(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		if keyMsg.Type == tea.KeyEsc && m.timeframePicker.IsSelecting() {
+			return m, Back
 		}
 	}
 
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		switch msg.String() {
-		case "ctrl+c":
-			return m, tea.Quit
-		case "esc":
-			if m.state == stateResult {
-				m.state = stateSelectTimeframe
-				m.err = nil
-				m.emailBody = ""
+	var cmd tea.Cmd
+	m.timeframePicker, cmd = m.timeframePicker.Update(msg)
+	return m, cmd
+}
 
-				return m, Back
-			}
-
-			if m.state == stateInputPath {
-				if m.selectedTimeframe == TimeframeCustom {
-					m.state = stateInputCustomDate
-					return m, nil
-				}
-
-				m.state = stateSelectTimeframe
-
-				return m, nil
-			}
-
-			if m.state == stateInputCustomDate {
-				m.state = stateSelectTimeframe
-				return m, nil
-			}
-
-			return m, Back
+func (m ExportModel) updatePath(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		if keyMsg.Type == tea.KeyEsc {
+			m.state = exportStateTimeframe
+			m.timeframePicker.Reset()
+			return m, nil
 		}
+	}
 
-		// Specific state handling
-		switch m.state {
-		case stateSelectTimeframe:
-			switch msg.String() {
-			case "up":
-				if m.selectedTimeframe > 0 {
-					m.selectedTimeframe--
-				}
-			case "down":
-				if m.selectedTimeframe < TimeframeCustom {
-					m.selectedTimeframe++
-				}
-			case "enter":
-				if m.selectedTimeframe == TimeframeCustom {
-					m.state = stateInputCustomDate
-					m.startDateInput.Focus()
-					m.dateFocusIndex = 0
+	form, cmd := m.form.Update(msg)
+	if f, ok := form.(*huh.Form); ok {
+		m.form = f
+	}
 
-					return m, textinput.Blink
-				}
-				// Go to path input
-				m.state = stateInputPath
-				m.pathInput.Focus()
+	if m.form.State != huh.StateCompleted {
+		return m, cmd
+	}
 
-				return m, textinput.Blink
-			}
+	m.state = exportStateExporting
+	m.err = nil
+	return m, tea.Batch(m.spinner.Tick, m.runExportCmd(m.startDate, m.endDate, m.path))
+}
 
-		case stateInputCustomDate:
-			switch msg.String() {
-			case "tab", "shift+tab", "up", "down":
-				m.dateFocusIndex = (m.dateFocusIndex + 1) % 2
-				if m.dateFocusIndex == 0 {
-					m.startDateInput.Focus()
-					m.endDateInput.Blur()
-				} else {
-					m.startDateInput.Blur()
-					m.endDateInput.Focus()
-				}
-
-				return m, textinput.Blink
-			case "enter":
-				// Validate dates before moving on?
-				// Simple validation check
-				if _, err := time.Parse("2006-01-02", m.startDateInput.Value()); err != nil {
-					m.err = fmt.Errorf("invalid start date: %v", err)
-					return m, nil
-				}
-
-				if _, err := time.Parse("2006-01-02", m.endDateInput.Value()); err != nil {
-					m.err = fmt.Errorf("invalid end date: %v", err)
-					return m, nil
-				}
-
-				m.state = stateInputPath
-				m.pathInput.Focus()
-
-				return m, textinput.Blink
-			}
-
-		case stateInputPath:
-			switch msg.String() {
-			case "enter":
-				return m.submit()
-			}
+func (m ExportModel) updateExporting(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if result, ok := msg.(exportResultMsg); ok {
+		m.state = exportStateResult
+		if result.err != nil {
+			m.err = result.err
 		}
-
-	case exportResultMsg:
-		m.state = stateResult
-		if msg.err != nil {
-			m.err = msg.err
-		} else {
-			m.emailBody = msg.body
-		}
-
+		m.summary = result.body
 		return m, nil
 	}
 
 	var cmd tea.Cmd
-
-	switch m.state {
-	case stateInputCustomDate:
-		var cmds []tea.Cmd
-
-		var c tea.Cmd
-		m.startDateInput, c = m.startDateInput.Update(msg)
-		cmds = append(cmds, c)
-		m.endDateInput, c = m.endDateInput.Update(msg)
-		cmds = append(cmds, c)
-		cmd = tea.Batch(cmds...)
-	case stateInputPath:
-		m.pathInput, cmd = m.pathInput.Update(msg)
-	case stateExporting:
-		m.spinner, cmd = m.spinner.Update(msg)
-	}
-
+	m.spinner, cmd = m.spinner.Update(msg)
 	return m, cmd
 }
 
-func (m ExportModel) View() string {
-	if m.state != stateSelectTimeframe && m.state != stateInputCustomDate && m.state != stateInputPath && m.err != nil {
-		return fmt.Sprintf("Error: %v\n\nPress Esc to back.", m.err)
-	}
-
-	errStr := ""
-	if m.err != nil {
-		errStr = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render(fmt.Sprintf("\n\nError: %v", m.err))
-	}
-
-	switch m.state {
-	case stateSelectTimeframe:
-		s := "Export Transactions\nSelect Timeframe:\n\n"
-
-		for i := TimeframeThisMonth; i <= TimeframeCustom; i++ {
-			cursor := " "
-			if m.selectedTimeframe == i {
-				cursor = ">"
-			}
-
-			s += fmt.Sprintf("%s %s\n", cursor, i.String())
+func (m ExportModel) updateResult(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		if keyMsg.Type == tea.KeyEsc {
+			return m, Back
 		}
+	}
+	return m, nil
+}
 
-		s += "\n(Enter to select, Esc to back)"
+func (m ExportModel) buildPathForm() *huh.Form {
+	return huh.NewForm(
+		huh.NewGroup(
+			huh.NewInput().
+				Key("path").
+				Title("Output Path").
+				Description("Directory will be created if it doesn't exist").
+				Placeholder("./exports").
+				Value(&m.path),
+		),
+	).WithWidth(50).WithShowHelp(false)
+}
 
-		return lipgloss.NewStyle().Padding(1).Render(s + errStr)
+func (m ExportModel) View() string {
+	switch m.state {
+	case exportStateTimeframe:
+		return lipgloss.NewStyle().Padding(1).Render(m.timeframePicker.View())
 
-	case stateInputCustomDate:
-		return lipgloss.NewStyle().Padding(1).Render(
-			fmt.Sprintf(
-				"Enter Custom Range:\n\n%s\n%s\n\n(Enter to continue, Esc to back)%s",
-				m.startDateInput.View(),
-				m.endDateInput.View(),
-				errStr,
-			),
-		)
+	case exportStatePath:
+		return lipgloss.NewStyle().Padding(1).Render(m.form.View())
 
-	case stateInputPath:
-		return lipgloss.NewStyle().Padding(1).Render(
-			fmt.Sprintf(
-				"Enter Output Path:\n\n%s\n\n(Enter to Start Export, Esc to back)%s",
-				m.pathInput.View(),
-				errStr,
-			),
-		)
-
-	case stateExporting:
+	case exportStateExporting:
 		return lipgloss.NewStyle().Padding(1).Render(
 			fmt.Sprintf("%s Exporting transactions and downloading invoices...", m.spinner.View()),
 		)
 
-	case stateResult:
-		return lipgloss.NewStyle().Padding(1).Render(
-			fmt.Sprintf(
-				"Export Complete!\n\nEmail Body:\n\n%s\n\n(Press Esc to return to menu)",
-				m.emailBody,
-			),
-		)
+	case exportStateResult:
+		return m.viewResult()
 	}
 
 	return ""
 }
 
-func (m *ExportModel) submit() (tea.Model, tea.Cmd) {
-	var start, end time.Time
-
-	switch m.selectedTimeframe {
-	case TimeframeAll:
-		break
-	case TimeframeCustom:
-		var err error
-
-		start, err = time.Parse("2006-01-02", m.startDateInput.Value())
-		if err != nil {
-			m.err = fmt.Errorf("invalid start date: %v", err)
-			return *m, nil
-		}
-
-		end, err = time.Parse("2006-01-02", m.endDateInput.Value())
-		if err != nil {
-			m.err = fmt.Errorf("invalid end date: %v", err)
-			return *m, nil
-		}
-	default:
-		start, end = TimeframeToDateRange(m.selectedTimeframe)
+func (m ExportModel) viewResult() string {
+	if m.err != nil {
+		return lipgloss.NewStyle().Padding(1).Render(
+			lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render(fmt.Sprintf("Error: %v", m.err)),
+		)
 	}
 
-	if m.selectedTimeframe != TimeframeAll {
-		start, end = NormalizeDateRange(start, end)
-	}
+	header := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("46")).
+		Render("Export Complete!")
 
-	pathStr := m.pathInput.Value()
-	m.state = stateExporting
-
-	return *m, tea.Batch(m.spinner.Tick, m.runExportCmd(start, end, pathStr))
+	return lipgloss.NewStyle().Padding(1).Render(
+		lipgloss.JoinVertical(lipgloss.Left,
+			header,
+			"",
+			"Summary:",
+			"",
+			m.summary,
+		),
+	)
 }
 
 type exportResultMsg struct {
@@ -324,21 +215,25 @@ type exportResultMsg struct {
 	err  error
 }
 
+const exportTimeout = 2 * time.Minute
+
 func (m ExportModel) runExportCmd(start, end time.Time, path string) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), exportTimeout)
 		defer cancel()
 
-		items, err := m.exportService.Export(ctx, transaction.ListFilter{
-			StartDate: &start,
-			EndDate:   &end,
-		}, path)
+		filter := transaction.ListFilter{}
+		if !m.allTime {
+			filter.StartDate = &start
+			filter.EndDate = &end
+		}
+
+		items, err := m.exportService.Export(ctx, filter, path)
 		if err != nil {
 			return exportResultMsg{err: err}
 		}
 
-		body := m.exportService.GenerateEmailBody(items)
-
+		body := m.exportService.GenerateSummary(items)
 		return exportResultMsg{body: body}
 	}
 }

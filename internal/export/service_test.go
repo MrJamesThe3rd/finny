@@ -166,7 +166,7 @@ func TestExportService_Export(t *testing.T) {
 	}
 }
 
-func TestService_GenerateEmailBody(t *testing.T) {
+func TestService_GenerateSummary(t *testing.T) {
 	s := &Service{}
 
 	date := time.Date(2023, 10, 27, 0, 0, 0, 0, time.UTC)
@@ -189,7 +189,7 @@ func TestService_GenerateEmailBody(t *testing.T) {
 		},
 	}
 
-	body := s.GenerateEmailBody(items)
+	body := s.GenerateSummary(items)
 
 	expectedSubstrings := []string{
 		"2023-10-27 | Hosting | -12.50 € | invoice.pdf",

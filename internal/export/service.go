@@ -140,8 +140,8 @@ func (s *Service) determineFilename(resp *http.Response, tx *transaction.Transac
 	return fmt.Sprintf("%s_%s%s", tx.Date.Format("20060102"), safeDesc, ext)
 }
 
-// GenerateEmailBody creates a formatted email body from the exported items.
-func (s *Service) GenerateEmailBody(items []Item) string {
+// GenerateSummary creates a formatted summary of the exported items.
+func (s *Service) GenerateSummary(items []Item) string {
 	var sb strings.Builder
 
 	for _, item := range items {

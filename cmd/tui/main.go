@@ -25,25 +25,10 @@ type model struct {
 	importService   *importer.Service
 	exportService   *export.Service
 
-	currentView View
-
-	importView  view.ImportModel
-	reviewView  view.ReviewModel
-	listView    view.ListModel
-	invoiceView view.InvoiceModel
-	exportView  view.ExportModel
+	activeView view.View // nil when showing menu
+	width      int
+	height     int
 }
-
-type View int
-
-const (
-	ViewMenu    View = 0
-	ViewImport  View = 1
-	ViewReview  View = 2
-	ViewList    View = 3
-	ViewInvoice View = 4
-	ViewExport  View = 5
-)
 
 func initialModel() model {
 	_ = godotenv.Load()
@@ -70,12 +55,6 @@ func initialModel() model {
 		matchingService: matchSvc,
 		importService:   impSvc,
 		exportService:   expSvc,
-		currentView:     ViewMenu,
-		importView:      view.NewImportModel(txSvc, impSvc),
-		reviewView:      view.NewReviewModel(txSvc, matchSvc),
-		listView:        view.NewListModel(txSvc),
-		invoiceView:     view.NewInvoiceModel(txSvc),
-		exportView:      view.NewExportModel(expSvc),
 	}
 }
 
@@ -83,96 +62,69 @@ func (m model) Init() tea.Cmd {
 	return nil
 }
 
-func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmd tea.Cmd
+func (m model) navigate(v view.View) (model, tea.Cmd) {
+	m.activeView = v
+	return m, v.Init()
+}
 
+func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+
+	case view.BackMsg:
+		m.activeView = nil
+		return m, nil
+
 	case tea.KeyMsg:
-		if m.currentView == ViewMenu {
+		if msg.String() == "ctrl+c" {
+			return m, tea.Quit
+		}
+
+		if m.activeView == nil {
 			switch msg.String() {
-			case "ctrl+c", "q":
+			case "q":
 				return m, tea.Quit
 			case "1":
-				m.currentView = ViewImport
-				return m, m.importView.Init()
+				return m.navigate(view.NewImportModel(m.txService, m.importService))
 			case "2":
-				m.currentView = ViewReview
-				m.reviewView = view.NewReviewModel(m.txService, m.matchingService)
-
-				return m, m.reviewView.Init()
+				return m.navigate(view.NewTransactionsModel(m.txService, m.matchingService))
 			case "3":
-				m.currentView = ViewList
-				m.listView = view.NewListModel(m.txService)
-
-				return m, m.listView.Init()
+				return m.navigate(view.NewListModel(m.txService))
 			case "4":
-				m.currentView = ViewInvoice
-				m.invoiceView = view.NewInvoiceModel(m.txService)
-
-				return m, m.invoiceView.Init()
-			case "5":
-				m.currentView = ViewExport
-				m.exportView = view.NewExportModel(m.exportService)
-
-				return m, m.exportView.Init()
+				return m.navigate(view.NewExportModel(m.exportService))
 			}
+			return m, nil
 		}
-	case view.BackMsg:
-		m.currentView = ViewMenu
-		return m, nil
 	}
 
-	switch m.currentView {
-	case ViewImport:
-		var newModel tea.Model
-		newModel, cmd = m.importView.Update(msg)
-		m.importView = newModel.(view.ImportModel)
-	case ViewReview:
-		var newModel tea.Model
-		newModel, cmd = m.reviewView.Update(msg)
-		m.reviewView = newModel.(view.ReviewModel)
-	case ViewList:
-		var newModel tea.Model
-		newModel, cmd = m.listView.Update(msg)
-		m.listView = newModel.(view.ListModel)
-	case ViewInvoice:
-		var newModel tea.Model
-		newModel, cmd = m.invoiceView.Update(msg)
-		m.invoiceView = newModel.(view.InvoiceModel)
-	case ViewExport:
-		var newModel tea.Model
-		newModel, cmd = m.exportView.Update(msg)
-		m.exportView = newModel.(view.ExportModel)
+	if m.activeView != nil {
+		updated, cmd := m.activeView.Update(msg)
+		m.activeView = updated.(view.View)
+		return m, cmd
 	}
 
-	return m, cmd
+	return m, nil
 }
 
 func (m model) View() string {
-	switch m.currentView {
-	case ViewMenu:
+	if m.activeView == nil {
 		return lipgloss.NewStyle().Padding(2).Render(
 			"Finny TUI\n\n" +
 				"1. Import Transactions\n" +
-				"2. Review Transactions\n" +
+				"2. Manage Transactions\n" +
 				"3. List All Transactions\n" +
-				"4. Manage Invoices\n" +
-				"5. Export Transactions\n\n" +
+				"4. Export Transactions\n\n" +
 				"q. Quit",
 		)
-	case ViewImport:
-		return m.importView.View()
-	case ViewReview:
-		return m.reviewView.View()
-	case ViewList:
-		return m.listView.View()
-	case ViewInvoice:
-		return m.invoiceView.View()
-	case ViewExport:
-		return m.exportView.View()
 	}
 
-	return "Unknown View"
+	title := lipgloss.NewStyle().Bold(true).Padding(1, 2).Render(m.activeView.Title())
+	content := m.activeView.View()
+	help := lipgloss.NewStyle().Faint(true).Padding(0, 2).Render(m.activeView.ShortHelp())
+
+	return lipgloss.JoinVertical(lipgloss.Left, title, content, help)
 }
 
 func main() {
