@@ -30,10 +30,12 @@ type txItem struct {
 
 func (i txItem) Title() string {
 	status := lipgloss.NewStyle().Faint(true).Render(fmt.Sprintf("[%s]", i.tx.Status))
+
 	desc := i.tx.Description
 	if desc == "" {
 		desc = i.tx.RawDescription
 	}
+
 	return fmt.Sprintf("%s  %s  %s  %s", FormatDate(i.tx.Date), FormatAmount(i.tx.Amount), status, desc)
 }
 
@@ -41,6 +43,7 @@ func (i txItem) Description() string {
 	if i.tx.Invoice != nil && i.tx.Invoice.URL != "" {
 		return fmt.Sprintf("Invoice: %s", i.tx.Invoice.URL)
 	}
+
 	return ""
 }
 
@@ -49,6 +52,7 @@ func (i txItem) FilterValue() string {
 	if desc == "" {
 		desc = i.tx.RawDescription
 	}
+
 	return desc
 }
 
@@ -71,9 +75,9 @@ type TransactionsModel struct {
 	status    string
 
 	// Form field bindings
-	formDesc    string
-	formURL     string
-	formNoInv   bool
+	formDesc  string
+	formURL   string
+	formNoInv bool
 }
 
 func NewTransactionsModel(txSvc *transaction.Service, matchSvc *matching.Service) TransactionsModel {
@@ -102,6 +106,7 @@ func (m TransactionsModel) ShortHelp() string {
 	case txStateEditing:
 		return "Esc: cancel | Enter/Tab: navigate form"
 	}
+
 	return ""
 }
 
@@ -117,6 +122,7 @@ func (m TransactionsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.allTime = msg.All
 		m.loading = true
 		m.state = txStateList
+
 		return m, m.loadTxsCmd()
 
 	case loadTxsMsg:
@@ -125,21 +131,27 @@ func (m TransactionsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = fmt.Sprintf("Error: %v", msg.err)
 			return m, nil
 		}
+
 		m.txs = msg.txs
 		m.refreshListItems()
+
 		if len(msg.txs) == 0 {
 			m.status = "No transactions found."
 		}
+
 		return m, nil
 
 	case saveTxResultMsg:
 		if msg.err != nil {
 			m.status = fmt.Sprintf("Error saving: %v", msg.err)
 			m.state = txStateList
+
 			return m, nil
 		}
+
 		m.status = "Saved."
 		m.state = txStateList
+
 		return m, m.loadTxsCmd()
 
 	case tea.WindowSizeMsg:
@@ -168,6 +180,7 @@ func (m TransactionsModel) updateTimeframe(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	var cmd tea.Cmd
 	m.timeframePicker, cmd = m.timeframePicker.Update(msg)
+
 	return m, cmd
 }
 
@@ -178,17 +191,20 @@ func (m TransactionsModel) updateList(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.list.FilterState() == list.Filtering {
 				break // let the list handle it (close filter)
 			}
+
 			return m, Back
 		case tea.KeyEnter:
 			if m.list.FilterState() == list.Filtering {
 				break // let the list handle it (confirm filter)
 			}
+
 			return m.startEditing()
 		}
 	}
 
 	var cmd tea.Cmd
 	m.list, cmd = m.list.Update(msg)
+
 	return m, cmd
 }
 
@@ -216,6 +232,7 @@ func (m TransactionsModel) startEditing() (tea.Model, tea.Cmd) {
 		if suggestion != "" {
 			m.formDesc = suggestion
 		}
+
 		if m.formDesc == "" {
 			m.formDesc = selected.tx.RawDescription
 		}
@@ -250,6 +267,7 @@ func (m TransactionsModel) startEditing() (tea.Model, tea.Cmd) {
 	).WithWidth(50).WithShowHelp(false)
 
 	m.state = txStateEditing
+
 	return m, m.form.Init()
 }
 
@@ -258,6 +276,7 @@ func (m TransactionsModel) updateEditing(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if keyMsg.Type == tea.KeyEsc {
 			m.state = txStateList
 			m.form = nil
+
 			return m, nil
 		}
 	}
@@ -284,17 +303,21 @@ func (m TransactionsModel) View() string {
 		if m.loading {
 			return lipgloss.NewStyle().Padding(2).Render("Loading transactions...")
 		}
+
 		statusLine := ""
 		if m.status != "" {
 			statusLine = lipgloss.NewStyle().Faint(true).Render(m.status) + "\n"
 		}
+
 		return lipgloss.NewStyle().Padding(1).Render(statusLine + m.list.View())
 
 	case txStateEditing:
 		if m.form == nil {
 			return ""
 		}
+
 		info := m.txInfoView()
+
 		return lipgloss.NewStyle().Padding(1).Render(
 			info + "\n" + m.form.View(),
 		)
@@ -307,6 +330,7 @@ func (m TransactionsModel) txInfoView() string {
 	if m.selectedTx == nil {
 		return ""
 	}
+
 	return lipgloss.NewStyle().
 		BorderStyle(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("240")).
@@ -325,6 +349,7 @@ func (m *TransactionsModel) refreshListItems() {
 	for i, tx := range m.txs {
 		items[i] = txItem{tx: tx}
 	}
+
 	m.list.SetItems(items)
 }
 
@@ -341,6 +366,7 @@ func (m TransactionsModel) loadTxsCmd() tea.Cmd {
 		defer cancel()
 
 		filter := transaction.ListFilter{}
+
 		if !m.allTime {
 			start, end := m.startDate, m.endDate
 			filter.StartDate = &start
@@ -348,6 +374,7 @@ func (m TransactionsModel) loadTxsCmd() tea.Cmd {
 		}
 
 		txs, err := m.txService.List(ctx, filter)
+
 		return loadTxsMsg{txs: txs, err: err}
 	}
 }
@@ -423,9 +450,11 @@ func (d txItemDelegate) Render(w io.Writer, m list.Model, index int, item list.I
 	}
 
 	fmt.Fprintf(w, "  %s\n", title)
+
 	if desc == "" {
 		fmt.Fprintln(w)
 		return
 	}
+
 	fmt.Fprintf(w, "    %s\n", lipgloss.NewStyle().Faint(true).Render(desc))
 }

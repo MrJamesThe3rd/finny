@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
 	"github.com/MrJamesThe3rd/finny/internal/transaction"
@@ -154,4 +155,132 @@ func TestService_List(t *testing.T) {
 			assert.Len(t, got, tt.wantLen)
 		})
 	}
+}
+
+func TestService_ImportBatch_NoConflicts(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	repo := transaction.NewMockRepository(ctrl)
+	itx := transaction.NewMockImportTx(ctrl)
+	svc := transaction.NewService(repo)
+
+	date := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
+	params := []transaction.CreateParams{
+		{
+			Amount:         1000,
+			Type:           transaction.TypeExpense,
+			Status:         transaction.StatusDraft,
+			Description:    "Coffee",
+			RawDescription: "COFFEE SHOP",
+			Date:           date,
+		},
+	}
+
+	repo.EXPECT().BeginImport(gomock.Any(), date, date).Return(itx, nil)
+	itx.EXPECT().FindDuplicates(gomock.Any(), params).Return(nil, nil)
+	itx.EXPECT().CreateTransactions(gomock.Any(), gomock.Any()).Return(nil)
+	itx.EXPECT().Commit().Return(nil)
+	itx.EXPECT().Rollback().Return(nil)
+
+	result, err := svc.ImportBatch(context.Background(), params)
+	require.NoError(t, err)
+	assert.Len(t, result.Imported, 1)
+	assert.Empty(t, result.Conflicts)
+	assert.Empty(t, result.New)
+}
+
+func TestService_ImportBatch_WithConflicts(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	repo := transaction.NewMockRepository(ctrl)
+	itx := transaction.NewMockImportTx(ctrl)
+	svc := transaction.NewService(repo)
+
+	date := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
+	params := []transaction.CreateParams{
+		{
+			Amount:         1000,
+			Type:           transaction.TypeExpense,
+			Status:         transaction.StatusDraft,
+			Description:    "Coffee",
+			RawDescription: "COFFEE SHOP",
+			Date:           date,
+		},
+		{
+			Amount:         2000,
+			Type:           transaction.TypeExpense,
+			Status:         transaction.StatusDraft,
+			Description:    "Lunch",
+			RawDescription: "LUNCH PLACE",
+			Date:           date,
+		},
+	}
+
+	existing := &transaction.Transaction{
+		ID:             uuid.New(),
+		Amount:         1000,
+		Type:           transaction.TypeExpense,
+		RawDescription: "COFFEE SHOP",
+		Date:           date,
+	}
+
+	repo.EXPECT().BeginImport(gomock.Any(), date, date).Return(itx, nil)
+	itx.EXPECT().FindDuplicates(gomock.Any(), params).Return([]*transaction.Transaction{existing}, nil)
+	itx.EXPECT().Rollback().Return(nil)
+
+	result, err := svc.ImportBatch(context.Background(), params)
+	require.NoError(t, err)
+	assert.Empty(t, result.Imported)
+	assert.Len(t, result.New, 1)
+	assert.Len(t, result.Conflicts, 1)
+	assert.Equal(t, params[0], result.Conflicts[0].Incoming)
+	assert.Equal(t, existing, result.Conflicts[0].Existing)
+}
+
+func TestService_ImportBatch_Empty(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	repo := transaction.NewMockRepository(ctrl)
+	svc := transaction.NewService(repo)
+
+	result, err := svc.ImportBatch(context.Background(), []transaction.CreateParams{})
+	require.NoError(t, err)
+	assert.Empty(t, result.Imported)
+	assert.Empty(t, result.Conflicts)
+	assert.Empty(t, result.New)
+}
+
+func TestService_CreateBatch(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	repo := transaction.NewMockRepository(ctrl)
+	itx := transaction.NewMockImportTx(ctrl)
+	svc := transaction.NewService(repo)
+
+	date := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
+	params := []transaction.CreateParams{
+		{
+			Amount:         1000,
+			Type:           transaction.TypeExpense,
+			Status:         transaction.StatusDraft,
+			Description:    "Coffee",
+			RawDescription: "COFFEE SHOP",
+			Date:           date,
+		},
+	}
+
+	repo.EXPECT().BeginImport(gomock.Any(), date, date).Return(itx, nil)
+	itx.EXPECT().CreateTransactions(gomock.Any(), gomock.Any()).Return(nil)
+	itx.EXPECT().Commit().Return(nil)
+	itx.EXPECT().Rollback().Return(nil)
+
+	txs, err := svc.CreateBatch(context.Background(), params)
+	require.NoError(t, err)
+	assert.Len(t, txs, 1)
+	assert.Equal(t, int64(1000), txs[0].Amount)
+	assert.Equal(t, transaction.TypeExpense, txs[0].Type)
 }

@@ -95,6 +95,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "4":
 				return m.navigate(view.NewExportModel(m.exportService))
 			}
+
 			return m, nil
 		}
 	}
@@ -102,6 +103,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.activeView != nil {
 		updated, cmd := m.activeView.Update(msg)
 		m.activeView = updated.(view.View)
+
 		return m, cmd
 	}
 

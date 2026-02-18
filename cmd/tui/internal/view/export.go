@@ -64,6 +64,7 @@ func (m ExportModel) ShortHelp() string {
 	case exportStateExporting:
 		return "Exporting..."
 	}
+
 	return "Esc: back | Enter: confirm"
 }
 
@@ -78,6 +79,7 @@ func (m ExportModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.allTime = tfMsg.All
 		m.form = m.buildPathForm()
 		m.state = exportStatePath
+
 		return m, m.form.Init()
 	}
 
@@ -104,6 +106,7 @@ func (m ExportModel) updateTimeframe(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	var cmd tea.Cmd
 	m.timeframePicker, cmd = m.timeframePicker.Update(msg)
+
 	return m, cmd
 }
 
@@ -112,6 +115,7 @@ func (m ExportModel) updatePath(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if keyMsg.Type == tea.KeyEsc {
 			m.state = exportStateTimeframe
 			m.timeframePicker.Reset()
+
 			return m, nil
 		}
 	}
@@ -127,6 +131,7 @@ func (m ExportModel) updatePath(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	m.state = exportStateExporting
 	m.err = nil
+
 	return m, tea.Batch(m.spinner.Tick, m.runExportCmd(m.startDate, m.endDate, m.path))
 }
 
@@ -136,12 +141,15 @@ func (m ExportModel) updateExporting(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if result.err != nil {
 			m.err = result.err
 		}
+
 		m.summary = result.body
+
 		return m, nil
 	}
 
 	var cmd tea.Cmd
 	m.spinner, cmd = m.spinner.Update(msg)
+
 	return m, cmd
 }
 
@@ -151,6 +159,7 @@ func (m ExportModel) updateResult(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, Back
 		}
 	}
+
 	return m, nil
 }
 
@@ -234,6 +243,7 @@ func (m ExportModel) runExportCmd(start, end time.Time, path string) tea.Cmd {
 		}
 
 		body := m.exportService.GenerateSummary(items)
+
 		return exportResultMsg{body: body}
 	}
 }

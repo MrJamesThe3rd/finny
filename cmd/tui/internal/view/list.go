@@ -82,6 +82,7 @@ func (m ListModel) ShortHelp() string {
 	if m.state == listStateEdit {
 		return "Navigate form | Esc: cancel"
 	}
+
 	return "Esc: back | e: edit | s: status filter | d: date filter | r: refresh"
 }
 
@@ -97,18 +98,22 @@ func (m ListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.err
 			return m, nil
 		}
+
 		m.txs = msg.txs
 		m.status = ""
 		m.refreshTable()
+
 		return m, nil
 
 	case listSaveMsg:
 		if msg.err != nil {
 			m.status = fmt.Sprintf("Error saving: %v", msg.err)
 		}
+
 		m.state = listStateBrowse
 		m.form = nil
 		m.table.Focus()
+
 		return m, m.loadTxsCmd()
 
 	case tea.WindowSizeMsg:
@@ -140,16 +145,19 @@ func (m ListModel) updateBrowse(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "s":
 			m.statusFilterIdx = (m.statusFilterIdx + 1) % 5
 			m.applyFilter()
+
 			return m, m.loadTxsCmd()
 		case "d":
 			m.dateFilterIdx = (m.dateFilterIdx + 1) % 3
 			m.applyFilter()
+
 			return m, m.loadTxsCmd()
 		}
 	}
 
 	var cmd tea.Cmd
 	m.table, cmd = m.table.Update(msg)
+
 	return m, cmd
 }
 
@@ -162,6 +170,7 @@ func (m ListModel) enterEditMode() (tea.Model, tea.Cmd) {
 	tx := m.txs[idx]
 	m.formDesc = tx.Description
 	m.formURL = ""
+
 	if tx.Invoice != nil {
 		m.formURL = tx.Invoice.URL
 	}
@@ -189,6 +198,7 @@ func (m ListModel) enterEditMode() (tea.Model, tea.Cmd) {
 
 	m.state = listStateEdit
 	m.table.Blur()
+
 	return m, m.form.Init()
 }
 
@@ -198,6 +208,7 @@ func (m ListModel) updateEdit(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.state = listStateBrowse
 			m.form = nil
 			m.table.Focus()
+
 			return m, nil
 		}
 	}
@@ -245,6 +256,7 @@ func (m ListModel) View() string {
 	if m.state == listStateEdit && m.form != nil {
 		idx := m.table.Cursor()
 		rawDesc := ""
+
 		if idx >= 0 && idx < len(m.txs) {
 			rawDesc = m.txs[idx].RawDescription
 		}
@@ -287,6 +299,7 @@ func (m *ListModel) applyFilter() {
 	}
 
 	now := time.Now()
+
 	switch m.dateFilterIdx {
 	case 1:
 		s := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
@@ -306,11 +319,13 @@ func (m *ListModel) applyFilter() {
 
 func (m *ListModel) refreshTable() {
 	rows := make([]table.Row, 0, len(m.txs))
+
 	for _, tx := range m.txs {
 		invoiceURL := ""
 		if tx.Invoice != nil {
 			invoiceURL = tx.Invoice.URL
 		}
+
 		rows = append(rows, table.Row{
 			FormatDate(tx.Date),
 			string(tx.Status),
@@ -319,6 +334,7 @@ func (m *ListModel) refreshTable() {
 			invoiceURL,
 		})
 	}
+
 	m.table.SetRows(rows)
 }
 
@@ -335,6 +351,7 @@ func (m ListModel) loadTxsCmd() tea.Cmd {
 		defer cancel()
 
 		txs, err := m.txService.List(ctx, m.filter)
+
 		return loadListMsg{txs: txs, err: err}
 	}
 }

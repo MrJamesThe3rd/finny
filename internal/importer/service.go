@@ -14,7 +14,7 @@ type Service struct {
 
 func NewService() *Service {
 	return &Service{
-		cgdImporter: cgd.New(),
+		cgdImporter: cgd.NewParser(),
 	}
 }
 

@@ -12,6 +12,7 @@ package transaction
 import (
 	context "context"
 	reflect "reflect"
+	time "time"
 
 	uuid "github.com/google/uuid"
 	gomock "go.uber.org/mock/gomock"
@@ -39,6 +40,21 @@ func NewMockRepository(ctrl *gomock.Controller) *MockRepository {
 // EXPECT returns an object that allows the caller to indicate expected use.
 func (m *MockRepository) EXPECT() *MockRepositoryMockRecorder {
 	return m.recorder
+}
+
+// BeginImport mocks base method.
+func (m *MockRepository) BeginImport(ctx context.Context, minDate, maxDate time.Time) (ImportTx, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "BeginImport", ctx, minDate, maxDate)
+	ret0, _ := ret[0].(ImportTx)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// BeginImport indicates an expected call of BeginImport.
+func (mr *MockRepositoryMockRecorder) BeginImport(ctx, minDate, maxDate any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "BeginImport", reflect.TypeOf((*MockRepository)(nil).BeginImport), ctx, minDate, maxDate)
 }
 
 // CreateTransaction mocks base method.
@@ -139,4 +155,85 @@ func (m *MockRepository) UpdateTransaction(ctx context.Context, tx *Transaction)
 func (mr *MockRepositoryMockRecorder) UpdateTransaction(ctx, tx any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateTransaction", reflect.TypeOf((*MockRepository)(nil).UpdateTransaction), ctx, tx)
+}
+
+// MockImportTx is a mock of ImportTx interface.
+type MockImportTx struct {
+	ctrl     *gomock.Controller
+	recorder *MockImportTxMockRecorder
+	isgomock struct{}
+}
+
+// MockImportTxMockRecorder is the mock recorder for MockImportTx.
+type MockImportTxMockRecorder struct {
+	mock *MockImportTx
+}
+
+// NewMockImportTx creates a new mock instance.
+func NewMockImportTx(ctrl *gomock.Controller) *MockImportTx {
+	mock := &MockImportTx{ctrl: ctrl}
+	mock.recorder = &MockImportTxMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockImportTx) EXPECT() *MockImportTxMockRecorder {
+	return m.recorder
+}
+
+// Commit mocks base method.
+func (m *MockImportTx) Commit() error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Commit")
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// Commit indicates an expected call of Commit.
+func (mr *MockImportTxMockRecorder) Commit() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Commit", reflect.TypeOf((*MockImportTx)(nil).Commit))
+}
+
+// CreateTransactions mocks base method.
+func (m *MockImportTx) CreateTransactions(ctx context.Context, txs []*Transaction) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CreateTransactions", ctx, txs)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// CreateTransactions indicates an expected call of CreateTransactions.
+func (mr *MockImportTxMockRecorder) CreateTransactions(ctx, txs any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CreateTransactions", reflect.TypeOf((*MockImportTx)(nil).CreateTransactions), ctx, txs)
+}
+
+// FindDuplicates mocks base method.
+func (m *MockImportTx) FindDuplicates(ctx context.Context, params []CreateParams) ([]*Transaction, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "FindDuplicates", ctx, params)
+	ret0, _ := ret[0].([]*Transaction)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// FindDuplicates indicates an expected call of FindDuplicates.
+func (mr *MockImportTxMockRecorder) FindDuplicates(ctx, params any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FindDuplicates", reflect.TypeOf((*MockImportTx)(nil).FindDuplicates), ctx, params)
+}
+
+// Rollback mocks base method.
+func (m *MockImportTx) Rollback() error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Rollback")
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// Rollback indicates an expected call of Rollback.
+func (mr *MockImportTxMockRecorder) Rollback() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Rollback", reflect.TypeOf((*MockImportTx)(nil).Rollback))
 }

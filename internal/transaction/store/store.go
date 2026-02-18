@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"hash/fnv"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -242,6 +244,139 @@ func (s *Store) UpdateInvoice(ctx context.Context, txID uuid.UUID, invoiceURL st
 
 	if err := dbTx.Commit(); err != nil {
 		return fmt.Errorf("committing transaction: %w", err)
+	}
+
+	return nil
+}
+
+func importLockKey(minDate, maxDate time.Time) int64 {
+	h := fnv.New64a()
+	h.Write([]byte(minDate.Format("2006-01-02")))
+	h.Write([]byte{0})
+	h.Write([]byte(maxDate.Format("2006-01-02")))
+
+	return int64(h.Sum64())
+}
+
+type importTx struct {
+	tx *sql.Tx
+}
+
+func (s *Store) BeginImport(ctx context.Context, minDate, maxDate time.Time) (transaction.ImportTx, error) {
+	dbTx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("beginning import tx: %w", err)
+	}
+
+	lockKey := importLockKey(minDate, maxDate)
+	if _, err := dbTx.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1)", lockKey); err != nil {
+		dbTx.Rollback()
+		return nil, fmt.Errorf("acquiring import lock: %w", err)
+	}
+
+	return &importTx{tx: dbTx}, nil
+}
+
+func (itx *importTx) Commit() error   { return itx.tx.Commit() }
+func (itx *importTx) Rollback() error { return itx.tx.Rollback() }
+
+func (itx *importTx) FindDuplicates(ctx context.Context, params []transaction.CreateParams) ([]*transaction.Transaction, error) {
+	if len(params) == 0 {
+		return nil, nil
+	}
+
+	type lookupKey struct {
+		Date           string
+		Amount         int64
+		Type           transaction.Type
+		RawDescription string
+	}
+
+	// Find min/max dates and build lookup set.
+	minDate := params[0].Date
+	maxDate := params[0].Date
+	keySet := make(map[lookupKey]struct{}, len(params))
+
+	for _, p := range params {
+		if p.Date.Before(minDate) {
+			minDate = p.Date
+		}
+
+		if p.Date.After(maxDate) {
+			maxDate = p.Date
+		}
+
+		keySet[lookupKey{
+			Date:           p.Date.Format("2006-01-02"),
+			Amount:         p.Amount,
+			Type:           p.Type,
+			RawDescription: p.RawDescription,
+		}] = struct{}{}
+	}
+
+	// Query all non-deleted transactions in the date range.
+	query := `SELECT ` + selectTransactionColumns + `
+		FROM transactions t
+		LEFT JOIN invoices i ON t.invoice_id = i.id
+		WHERE t.deleted_at IS NULL AND t.date >= $1 AND t.date <= $2
+		ORDER BY t.date ASC`
+
+	rows, err := itx.tx.QueryContext(ctx, query, minDate, maxDate)
+	if err != nil {
+		return nil, fmt.Errorf("finding duplicates: %w", err)
+	}
+	defer rows.Close()
+
+	var duplicates []*transaction.Transaction
+
+	for rows.Next() {
+		tx, err := scanTransaction(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scanning transaction: %w", err)
+		}
+
+		k := lookupKey{
+			Date:           tx.Date.Format("2006-01-02"),
+			Amount:         tx.Amount,
+			Type:           tx.Type,
+			RawDescription: tx.RawDescription,
+		}
+
+		_, found := keySet[k]
+		if !found {
+			continue
+		}
+
+		duplicates = append(duplicates, tx)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating duplicate rows: %w", err)
+	}
+
+	return duplicates, nil
+}
+
+func (itx *importTx) CreateTransactions(ctx context.Context, txs []*transaction.Transaction) error {
+	query := `
+		INSERT INTO transactions (amount, type, status, description, raw_description, date, invoice_id, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+		RETURNING id, created_at, updated_at
+	`
+
+	for _, tx := range txs {
+		err := itx.tx.QueryRowContext(ctx, query,
+			tx.Amount,
+			tx.Type,
+			tx.Status,
+			tx.Description,
+			tx.RawDescription,
+			tx.Date,
+			tx.InvoiceID,
+		).Scan(&tx.ID, &tx.CreatedAt, &tx.UpdatedAt)
+		if err != nil {
+			return fmt.Errorf("creating transaction: %w", err)
+		}
 	}
 
 	return nil

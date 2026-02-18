@@ -48,6 +48,10 @@ func (m *mockRepo) UpdateStatus(ctx context.Context, id uuid.UUID, status transa
 	return nil
 }
 
+func (m *mockRepo) BeginImport(ctx context.Context, minDate, maxDate time.Time) (transaction.ImportTx, error) {
+	return nil, nil
+}
+
 func TestExportService_Export(t *testing.T) {
 	// Setup HTTP server for invoices
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

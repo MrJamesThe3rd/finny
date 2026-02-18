@@ -169,6 +169,7 @@ func (m TimeframePicker) updateSelect(msg tea.KeyMsg) (TimeframePicker, tea.Cmd)
 			m.state = timeframeStateCustom
 			m.startInput.Focus()
 			m.focusIndex = 0
+
 			return m, textinput.Blink
 		}
 
@@ -180,6 +181,7 @@ func (m TimeframePicker) updateSelect(msg tea.KeyMsg) (TimeframePicker, tea.Cmd)
 
 		start, end := timeframeToDateRange(m.selected)
 		start, end = normalizeDateRange(start, end)
+
 		return m, func() tea.Msg {
 			return TimeframeSelectedMsg{Start: start, End: end}
 		}
@@ -194,11 +196,14 @@ func (m TimeframePicker) updateCustom(msg tea.KeyMsg) (TimeframePicker, tea.Cmd)
 		m.focusIndex = (m.focusIndex + 1) % 2
 		m.startInput.Blur()
 		m.endInput.Blur()
+
 		if m.focusIndex == 0 {
 			m.startInput.Focus()
 			return m, textinput.Blink
 		}
+
 		m.endInput.Focus()
+
 		return m, textinput.Blink
 
 	case "enter":
@@ -216,6 +221,7 @@ func (m TimeframePicker) updateCustom(msg tea.KeyMsg) (TimeframePicker, tea.Cmd)
 
 		m.err = nil
 		start, end = normalizeDateRange(start, end)
+
 		return m, func() tea.Msg {
 			return TimeframeSelectedMsg{Start: start, End: end}
 		}
@@ -223,6 +229,7 @@ func (m TimeframePicker) updateCustom(msg tea.KeyMsg) (TimeframePicker, tea.Cmd)
 	case "esc":
 		m.state = timeframeStateSelect
 		m.err = nil
+
 		return m, nil
 	}
 
@@ -231,6 +238,7 @@ func (m TimeframePicker) updateCustom(msg tea.KeyMsg) (TimeframePicker, tea.Cmd)
 
 func (m TimeframePicker) updateInputs(msg tea.Msg) (TimeframePicker, tea.Cmd) {
 	var cmds []tea.Cmd
+
 	var c tea.Cmd
 
 	m.startInput, c = m.startInput.Update(msg)
@@ -258,13 +266,16 @@ func (m TimeframePicker) View() string {
 	}
 
 	s := "Select Timeframe:\n\n"
+
 	for i := m.minFrame; i <= TimeframeCustom; i++ {
 		cursor := " "
 		if m.selected == i {
 			cursor = ">"
 		}
+
 		s += fmt.Sprintf("%s %s\n", cursor, i.String())
 	}
+
 	s += "\n(Enter to select, Esc to back)"
 
 	return s + errStr
