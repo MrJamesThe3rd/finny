@@ -1,0 +1,758 @@
+openapi: 3.0.3
+info:
+  title: Finny API
+  description: Personal finance management API
+  version: 1.0.0
+servers:
+  - url: http://localhost:8080/api/v1
+    description: Local development
+
+tags:
+  - name: Transactions
+  - name: Documents
+  - name: Import
+  - name: Matching
+  - name: Export
+  - name: Backends
+
+paths:
+  /transactions:
+    post:
+      summary: Create a transaction
+      tags: [Transactions]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTransactionRequest'
+      responses:
+        '201':
+          description: Transaction created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transaction'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    get:
+      summary: List transactions
+      tags: [Transactions]
+      parameters:
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/TransactionStatus'
+        - name: start_date
+          in: query
+          schema:
+            type: string
+            format: date
+            example: '2024-01-01'
+        - name: end_date
+          in: query
+          schema:
+            type: string
+            format: date
+            example: '2024-12-31'
+      responses:
+        '200':
+          description: List of transactions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Transaction'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /transactions/{id}:
+    parameters:
+      - $ref: '#/components/parameters/TransactionID'
+    get:
+      summary: Get a transaction
+      tags: [Transactions]
+      responses:
+        '200':
+          description: Transaction found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transaction'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      summary: Delete a transaction
+      tags: [Transactions]
+      responses:
+        '204':
+          description: Deleted
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    patch:
+      summary: Update a transaction
+      tags: [Transactions]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTransactionRequest'
+      responses:
+        '200':
+          description: Updated transaction
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transaction'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /transactions/{id}/status:
+    parameters:
+      - $ref: '#/components/parameters/TransactionID'
+    patch:
+      summary: Update transaction status
+      tags: [Transactions]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateStatusRequest'
+      responses:
+        '204':
+          description: Status updated
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /transactions/{id}/document:
+    parameters:
+      - $ref: '#/components/parameters/TransactionID'
+    post:
+      summary: Upload a document for a transaction
+      tags: [Documents]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '201':
+          description: Document uploaded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Document'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Transaction already has a document
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: No document backend configured
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    get:
+      summary: Download the document attached to a transaction
+      tags: [Documents]
+      responses:
+        '200':
+          description: Document binary
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      summary: Delete the document attached to a transaction
+      tags: [Documents]
+      responses:
+        '204':
+          description: Deleted
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /import:
+    post:
+      summary: Parse a bank CSV file
+      description: |
+        Parses the uploaded CSV and checks for conflicts with existing transactions.
+        Returns 201 with the imported transactions if no conflicts exist.
+        Returns 409 with `new` (safe to create) and `conflicts` (duplicates) if conflicts are found.
+        Call `POST /import/confirm` with the rows you want to persist.
+      tags: [Import]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [bank, file]
+              properties:
+                bank:
+                  type: string
+                  description: Bank identifier (e.g. millennium)
+                  example: millennium
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '201':
+          description: Import successful, no conflicts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportSuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          description: Import conflicts detected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportConflictResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /import/confirm:
+    post:
+      summary: Confirm and persist parsed import rows
+      tags: [Import]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfirmImportRequest'
+      responses:
+        '201':
+          description: Transactions created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportSuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /matching/suggest:
+    get:
+      summary: Suggest a preferred description for a raw description
+      tags: [Matching]
+      parameters:
+        - name: raw_description
+          in: query
+          required: true
+          schema:
+            type: string
+          example: COMPRA CONTINENTE 12345
+      responses:
+        '200':
+          description: Suggestion
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuggestResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /matching:
+    post:
+      summary: Learn a description mapping
+      tags: [Matching]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LearnRequest'
+      responses:
+        '201':
+          description: Mapping learned
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /export:
+    post:
+      summary: Get export metadata and email body
+      tags: [Export]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExportRequest'
+      responses:
+        '200':
+          description: Export metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExportMetadataResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /export/download:
+    post:
+      summary: Download transactions and documents as a zip archive
+      tags: [Export]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExportRequest'
+      responses:
+        '200':
+          description: Zip archive containing transactions and documents
+          content:
+            application/zip:
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /backends:
+    get:
+      summary: List document backends
+      tags: [Backends]
+      responses:
+        '200':
+          description: List of backends
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Backend'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      summary: Create a document backend
+      tags: [Backends]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateBackendRequest'
+      responses:
+        '201':
+          description: Backend created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Backend'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /backends/{id}:
+    parameters:
+      - $ref: '#/components/parameters/BackendID'
+    patch:
+      summary: Update a document backend
+      tags: [Backends]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateBackendRequest'
+      responses:
+        '204':
+          description: Updated
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      summary: Delete a document backend
+      tags: [Backends]
+      parameters:
+        - name: force
+          in: query
+          schema:
+            type: boolean
+          description: Delete even if the backend still has documents attached
+      responses:
+        '204':
+          description: Deleted
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Backend still has documents (use ?force=true to override)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+components:
+  parameters:
+    TransactionID:
+      name: id
+      in: path
+      required: true
+      description: Transaction UUID
+      schema:
+        type: string
+        format: uuid
+    BackendID:
+      name: id
+      in: path
+      required: true
+      description: Backend UUID
+      schema:
+        type: string
+        format: uuid
+
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  schemas:
+    TransactionType:
+      type: string
+      enum: [income, expense]
+
+    TransactionStatus:
+      type: string
+      enum: [draft, pending_invoice, complete, no_invoice]
+
+    Transaction:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        amount:
+          type: integer
+          format: int64
+          description: Amount in cents
+        type:
+          $ref: '#/components/schemas/TransactionType'
+        status:
+          $ref: '#/components/schemas/TransactionStatus'
+        description:
+          type: string
+        raw_description:
+          type: string
+        date:
+          type: string
+          format: date-time
+        document_id:
+          type: string
+          format: uuid
+          nullable: true
+        document:
+          allOf:
+            - $ref: '#/components/schemas/Document'
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    Document:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        filename:
+          type: string
+        mime_type:
+          type: string
+
+    Backend:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum: [paperless, local]
+        name:
+          type: string
+        config:
+          type: object
+          additionalProperties: true
+        enabled:
+          type: boolean
+
+    CreateTransactionRequest:
+      type: object
+      required: [amount, type, description, date]
+      properties:
+        amount:
+          type: integer
+          format: int64
+          description: Amount in cents, must not be zero
+          example: 4999
+        type:
+          $ref: '#/components/schemas/TransactionType'
+        description:
+          type: string
+          example: Grocery shopping
+        date:
+          type: string
+          format: date-time
+          example: '2024-06-15T00:00:00Z'
+
+    UpdateTransactionRequest:
+      type: object
+      properties:
+        description:
+          type: string
+        amount:
+          type: integer
+          format: int64
+        type:
+          $ref: '#/components/schemas/TransactionType'
+        date:
+          type: string
+          format: date-time
+
+    UpdateStatusRequest:
+      type: object
+      required: [status]
+      properties:
+        status:
+          $ref: '#/components/schemas/TransactionStatus'
+
+    CreateParamsDTO:
+      type: object
+      required: [amount, type, date]
+      properties:
+        amount:
+          type: integer
+          format: int64
+          description: Amount in cents
+        type:
+          $ref: '#/components/schemas/TransactionType'
+        description:
+          type: string
+        raw_description:
+          type: string
+        date:
+          type: string
+          format: date-time
+
+    ImportSuccessResponse:
+      type: object
+      properties:
+        imported:
+          type: integer
+        transactions:
+          type: array
+          items:
+            $ref: '#/components/schemas/Transaction'
+
+    ConflictDTO:
+      type: object
+      properties:
+        incoming:
+          $ref: '#/components/schemas/CreateParamsDTO'
+        existing:
+          $ref: '#/components/schemas/Transaction'
+
+    ImportConflictResponse:
+      type: object
+      properties:
+        new:
+          type: array
+          items:
+            $ref: '#/components/schemas/CreateParamsDTO'
+        conflicts:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConflictDTO'
+
+    ConfirmImportRequest:
+      type: object
+      required: [params]
+      properties:
+        params:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/CreateParamsDTO'
+
+    ExportRequest:
+      type: object
+      properties:
+        start_date:
+          type: string
+          format: date-time
+        end_date:
+          type: string
+          format: date-time
+
+    ExportTransactionResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        amount:
+          type: integer
+          format: int64
+        type:
+          $ref: '#/components/schemas/TransactionType'
+        status:
+          $ref: '#/components/schemas/TransactionStatus'
+        description:
+          type: string
+        raw_description:
+          type: string
+        date:
+          type: string
+          format: date-time
+        document_id:
+          type: string
+          format: uuid
+          nullable: true
+
+    ExportMetadataResponse:
+      type: object
+      properties:
+        transactions:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExportTransactionResponse'
+        email_body:
+          type: string
+
+    SuggestResponse:
+      type: object
+      properties:
+        raw_description:
+          type: string
+        preferred_description:
+          type: string
+
+    LearnRequest:
+      type: object
+      required: [raw_pattern, preferred_description]
+      properties:
+        raw_pattern:
+          type: string
+          example: COMPRA CONTINENTE
+        preferred_description:
+          type: string
+          example: Continente
+
+    CreateBackendRequest:
+      type: object
+      required: [type, name, config]
+      properties:
+        type:
+          type: string
+          enum: [paperless, local]
+        name:
+          type: string
+          example: My Paperless
+        config:
+          type: object
+          additionalProperties: true
+          description: Backend-specific configuration (varies by type)
+
+    UpdateBackendRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        config:
+          type: object
+          additionalProperties: true
+        enabled:
+          type: boolean
+
+    ErrorResponse:
+      type: object
+      properties:
+        code:
+          type: string
+          example: NOT_FOUND
+        message:
+          type: string
+          example: Resource not found
