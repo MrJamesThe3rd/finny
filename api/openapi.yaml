@@ -212,6 +212,8 @@ paths:
       responses:
         '204':
           description: Deleted
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
         '500':
@@ -438,6 +440,8 @@ paths:
       responses:
         '204':
           description: Deleted
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
