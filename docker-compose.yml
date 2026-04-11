@@ -1,39 +1,39 @@
-version: '3.8'
-
 services:
-  app:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: finny
+      POSTGRES_PASSWORD: secret
+      POSTGRES_DB: finny
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U finny"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
     build: .
     ports:
       - "8080:8080"
+    env_file: .env
     environment:
-      - APP_NAME=Finny
-      - PORT=8080
-      - DB_HOST=db
-      - DB_PORT=5432
-      - DB_USER=finny
-      - DB_PASSWORD=secret
-      - DB_NAME=finny
-      - SERVER_TIMEOUT=30s
+      DB_HOST: db
     depends_on:
-      - db
-    networks:
-      - finny-net
+      db:
+        condition: service_healthy
 
-  db:
-    image: postgres:18-alpine
+  swagger:
+    image: swaggerapi/swagger-ui
     ports:
-      - "5432:5432"
-    environment:
-      - POSTGRES_USER=finny
-      - POSTGRES_PASSWORD=secret
-      - POSTGRES_DB=finny
+      - "8081:8080"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-    networks:
-      - finny-net
-
-networks:
-  finny-net:
+      - ./api/openapi.yaml:/openapi.yaml:ro
+    environment:
+      SWAGGER_JSON: /openapi.yaml
 
 volumes:
   postgres_data:
