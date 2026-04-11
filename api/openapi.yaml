@@ -208,9 +208,14 @@ paths:
       tags: [Documents]
       responses:
         '200':
-          description: Document binary
+          description: Document binary — content-type reflects the uploaded file format
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+                example: 'attachment; filename="invoice.pdf"'
           content:
-            application/octet-stream:
+            '*/*':
               schema:
                 type: string
                 format: binary
