@@ -41,12 +41,13 @@ type ExportModel struct {
 	summary string
 }
 
-func NewExportModel(svc *export.Service) ExportModel {
+func NewExportModel(baseCtx context.Context, svc *export.Service) ExportModel {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
 
 	return ExportModel{
+		CommonModel:     CommonModel{baseCtx: baseCtx},
 		exportService:   svc,
 		state:           exportStateTimeframe,
 		timeframePicker: NewTimeframePicker(TimeframeThisMonth),
@@ -129,6 +130,11 @@ func (m ExportModel) updatePath(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
+	m.path = m.form.GetString("path")
+	if m.path == "" {
+		m.path = "./exports"
+	}
+
 	m.state = exportStateExporting
 	m.err = nil
 
@@ -170,8 +176,7 @@ func (m ExportModel) buildPathForm() *huh.Form {
 				Key("path").
 				Title("Output Path").
 				Description("Directory will be created if it doesn't exist").
-				Placeholder("./exports").
-				Value(&m.path),
+				Placeholder("./exports"),
 		),
 	).WithWidth(50).WithShowHelp(false)
 }
@@ -227,8 +232,9 @@ type exportResultMsg struct {
 const exportTimeout = 2 * time.Minute
 
 func (m ExportModel) runExportCmd(start, end time.Time, path string) tea.Cmd {
+	baseCtx := m.baseCtx
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), exportTimeout)
+		ctx, cancel := context.WithTimeout(baseCtx, exportTimeout)
 		defer cancel()
 
 		filter := transaction.ListFilter{}

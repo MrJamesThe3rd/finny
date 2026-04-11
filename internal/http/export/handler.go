@@ -2,7 +2,6 @@ package export
 
 import (
 	"archive/zip"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -15,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/MrJamesThe3rd/finny/internal/export"
+	"github.com/MrJamesThe3rd/finny/internal/httputil"
 	"github.com/MrJamesThe3rd/finny/internal/transaction"
 )
 
@@ -44,7 +44,7 @@ type transactionResponse struct {
 	Description    string             `json:"description"`
 	RawDescription string             `json:"raw_description,omitempty"`
 	Date           time.Time          `json:"date"`
-	InvoiceURL     string             `json:"invoice_url,omitempty"`
+	DocumentID     *uuid.UUID         `json:"document_id,omitempty"`
 }
 
 type exportMetadataResponse struct {
@@ -53,7 +53,7 @@ type exportMetadataResponse struct {
 }
 
 func toTransactionResponse(tx *transaction.Transaction) transactionResponse {
-	resp := transactionResponse{
+	return transactionResponse{
 		ID:             tx.ID,
 		Amount:         tx.Amount,
 		Type:           tx.Type,
@@ -61,19 +61,14 @@ func toTransactionResponse(tx *transaction.Transaction) transactionResponse {
 		Description:    tx.Description,
 		RawDescription: tx.RawDescription,
 		Date:           tx.Date,
+		DocumentID:     tx.DocumentID,
 	}
-
-	if tx.Invoice != nil {
-		resp.InvoiceURL = tx.Invoice.URL
-	}
-
-	return resp
 }
 
 func (h *Handler) metadata(w http.ResponseWriter, r *http.Request) {
 	var req exportRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if err := httputil.DecodeJSON(r, &req); err != nil {
+		httputil.BadRequest(w, "Invalid request body.")
 		return
 	}
 
@@ -84,38 +79,34 @@ func (h *Handler) metadata(w http.ResponseWriter, r *http.Request) {
 
 	tmpDir, err := os.MkdirTemp("", "finny-export-*")
 	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		slog.Error("failed to create temp dir for export", "error", err)
+		httputil.InternalError(w)
 		return
 	}
 	defer os.RemoveAll(tmpDir)
 
 	items, err := h.svc.Export(r.Context(), filter, tmpDir)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		slog.Error("failed to export transactions", "error", err)
+		httputil.InternalError(w)
 		return
 	}
-
-	emailBody := h.svc.GenerateSummary(items)
 
 	txResponses := make([]transactionResponse, 0, len(items))
 	for _, item := range items {
 		txResponses = append(txResponses, toTransactionResponse(item.Transaction))
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-
-	if err := json.NewEncoder(w).Encode(exportMetadataResponse{
+	httputil.WriteJSON(w, http.StatusOK, exportMetadataResponse{
 		Transactions: txResponses,
-		EmailBody:    emailBody,
-	}); err != nil {
-		slog.Error("failed to encode response", "error", err)
-	}
+		EmailBody:    h.svc.GenerateSummary(items),
+	})
 }
 
 func (h *Handler) download(w http.ResponseWriter, r *http.Request) {
 	var req exportRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if err := httputil.DecodeJSON(r, &req); err != nil {
+		httputil.BadRequest(w, "Invalid request body.")
 		return
 	}
 
@@ -126,20 +117,23 @@ func (h *Handler) download(w http.ResponseWriter, r *http.Request) {
 
 	tmpDir, err := os.MkdirTemp("", "finny-export-*")
 	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		slog.Error("failed to create temp dir for download", "error", err)
+		httputil.InternalError(w)
 		return
 	}
 	defer os.RemoveAll(tmpDir)
 
 	items, err := h.svc.Export(r.Context(), filter, tmpDir)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		slog.Error("failed to export transactions for download", "error", err)
+		httputil.InternalError(w)
 		return
 	}
 
 	emailBody := h.svc.GenerateSummary(items)
 	if err := os.WriteFile(filepath.Join(tmpDir, "email_body.txt"), []byte(emailBody), 0o644); err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		slog.Error("failed to write email body", "error", err)
+		httputil.InternalError(w)
 		return
 	}
 
@@ -169,7 +163,6 @@ func (h *Handler) download(w http.ResponseWriter, r *http.Request) {
 		defer f.Close()
 
 		_, err = io.Copy(zf, f)
-
 		return err
 	})
 	if err != nil {

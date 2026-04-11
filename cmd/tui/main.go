@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log/slog"
 	"os"
 
@@ -9,8 +10,13 @@ import (
 	"github.com/joho/godotenv"
 
 	"github.com/MrJamesThe3rd/finny/cmd/tui/internal/view"
+	"github.com/MrJamesThe3rd/finny/internal/auth"
 	"github.com/MrJamesThe3rd/finny/internal/config"
 	"github.com/MrJamesThe3rd/finny/internal/database"
+	"github.com/MrJamesThe3rd/finny/internal/document"
+	"github.com/MrJamesThe3rd/finny/internal/document/local"
+	"github.com/MrJamesThe3rd/finny/internal/document/paperless"
+	docStore "github.com/MrJamesThe3rd/finny/internal/document/store"
 	"github.com/MrJamesThe3rd/finny/internal/export"
 	"github.com/MrJamesThe3rd/finny/internal/importer"
 	"github.com/MrJamesThe3rd/finny/internal/matching"
@@ -20,9 +26,11 @@ import (
 )
 
 type model struct {
+	baseCtx         context.Context
 	txService       *transaction.Service
 	matchingService *matching.Service
 	importService   *importer.Service
+	documentService *document.Service
 	exportService   *export.Service
 
 	activeView view.View // nil when showing menu
@@ -45,15 +53,30 @@ func initialModel() model {
 		os.Exit(1)
 	}
 
+	registry := document.NewRegistry()
+	registry.Register("paperless", paperless.NewFromConfig)
+	registry.Register("local", local.NewFromConfig)
+
 	txSvc := transaction.NewService(txStore.New(db))
 	matchSvc := matching.NewService(matchingStore.New(db))
 	impSvc := importer.NewService()
-	expSvc := export.NewService(txSvc, cfg.Paperless.Token)
+	docSvc := document.NewService(docStore.New(db), registry)
+	expSvc := export.NewService(txSvc, docSvc)
+
+	baseCtx := auth.WithUserID(context.Background(), auth.DefaultUserID)
+
+	if cfg.Paperless.BaseURL != "" {
+		if err := docSvc.SeedLegacyBackend(baseCtx, cfg.Paperless.BaseURL, cfg.Paperless.Token); err != nil {
+			slog.Warn("failed to seed legacy paperless backend", "error", err)
+		}
+	}
 
 	return model{
+		baseCtx:         baseCtx,
 		txService:       txSvc,
 		matchingService: matchSvc,
 		importService:   impSvc,
+		documentService: docSvc,
 		exportService:   expSvc,
 	}
 }
@@ -87,13 +110,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "q":
 				return m, tea.Quit
 			case "1":
-				return m.navigate(view.NewImportModel(m.txService, m.importService))
+				return m.navigate(view.NewImportModel(m.baseCtx, m.txService, m.importService))
 			case "2":
-				return m.navigate(view.NewTransactionsModel(m.txService, m.matchingService))
+				return m.navigate(view.NewTransactionsModel(m.baseCtx, m.txService, m.matchingService, m.documentService))
 			case "3":
-				return m.navigate(view.NewListModel(m.txService))
+				return m.navigate(view.NewListModel(m.baseCtx, m.txService, m.documentService))
 			case "4":
-				return m.navigate(view.NewExportModel(m.exportService))
+				return m.navigate(view.NewExportModel(m.baseCtx, m.exportService))
+			case "5":
+				return m.navigate(view.NewBackendsModel(m.baseCtx, m.documentService))
 			}
 
 			return m, nil
@@ -117,7 +142,8 @@ func (m model) View() string {
 				"1. Import Transactions\n" +
 				"2. Manage Transactions\n" +
 				"3. List All Transactions\n" +
-				"4. Export Transactions\n\n" +
+				"4. Export Transactions\n" +
+				"5. Manage Backends\n\n" +
 				"q. Quit",
 		)
 	}

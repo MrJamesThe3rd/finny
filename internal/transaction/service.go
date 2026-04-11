@@ -17,7 +17,8 @@ type Repository interface {
 
 	ListTransactions(ctx context.Context, filter ListFilter) ([]*Transaction, error)
 	DeleteTransaction(ctx context.Context, id uuid.UUID) error
-	UpdateInvoice(ctx context.Context, id uuid.UUID, invoiceURL string) error
+	AttachDocument(ctx context.Context, txID uuid.UUID, documentID uuid.UUID) error
+	DetachDocument(ctx context.Context, txID uuid.UUID) error
 
 	BeginImport(ctx context.Context, minDate, maxDate time.Time) (ImportTx, error)
 }
@@ -68,8 +69,12 @@ func (s *Service) Create(ctx context.Context, params CreateParams) (*Transaction
 	return tx, nil
 }
 
-func (s *Service) AttachInvoice(ctx context.Context, id uuid.UUID, invoiceURL string) error {
-	return s.repo.UpdateInvoice(ctx, id, invoiceURL)
+func (s *Service) AttachDocument(ctx context.Context, txID uuid.UUID, documentID uuid.UUID) error {
+	return s.repo.AttachDocument(ctx, txID, documentID)
+}
+
+func (s *Service) DetachDocument(ctx context.Context, txID uuid.UUID) error {
+	return s.repo.DetachDocument(ctx, txID)
 }
 
 func (s *Service) List(ctx context.Context, filter ListFilter) ([]*Transaction, error) {
@@ -92,9 +97,6 @@ func (s *Service) Delete(ctx context.Context, id uuid.UUID) error {
 	return s.repo.DeleteTransaction(ctx, id)
 }
 
-func (s *Service) UpdateInvoice(ctx context.Context, id uuid.UUID, invoiceURL string) error {
-	return s.repo.UpdateInvoice(ctx, id, invoiceURL)
-}
 
 type ImportResult struct {
 	Imported  []*Transaction
@@ -166,6 +168,8 @@ func (s *Service) ImportBatch(ctx context.Context, params []CreateParams) (*Impo
 	}
 
 	if len(conflicts) > 0 {
+		// Return without committing. The deferred Rollback() releases the advisory
+		// lock; no rows were written at this point so nothing is discarded.
 		return &ImportResult{New: newParams, Conflicts: conflicts}, nil
 	}
 

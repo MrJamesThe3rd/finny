@@ -33,16 +33,17 @@ type Transaction struct {
 	Description    string
 	RawDescription string
 	Date           time.Time
-	InvoiceID      *uuid.UUID
-	Invoice        *Invoice // Loaded via JOIN
+	DocumentID     *uuid.UUID
+	Document       *Document // Loaded via JOIN; contains metadata only (no download URL)
 	CreatedAt      time.Time
 	UpdatedAt      *time.Time
 	DeletedAt      *time.Time
 }
 
-// Invoice represents an invoice document linked to a transaction.
-type Invoice struct {
-	ID        uuid.UUID
-	URL       string
-	CreatedAt time.Time
+// Document is the document metadata attached to a transaction.
+// Content is retrieved via the document service.
+type Document struct {
+	ID       uuid.UUID
+	Filename string
+	MIMEType string
 }

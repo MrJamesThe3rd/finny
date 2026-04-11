@@ -16,15 +16,16 @@ type transactionResponse struct {
 	Description    string             `json:"description"`
 	RawDescription string             `json:"raw_description,omitempty"`
 	Date           time.Time          `json:"date"`
-	InvoiceID      *uuid.UUID         `json:"invoice_id,omitempty"`
-	Invoice        *invoiceResponse   `json:"invoice,omitempty"`
+	DocumentID     *uuid.UUID         `json:"document_id,omitempty"`
+	Document       *documentResponse  `json:"document,omitempty"`
 	CreatedAt      time.Time          `json:"created_at"`
 	UpdatedAt      *time.Time         `json:"updated_at,omitempty"`
 }
 
-type invoiceResponse struct {
-	ID  uuid.UUID `json:"id"`
-	URL string    `json:"url"`
+type documentResponse struct {
+	ID       uuid.UUID `json:"id"`
+	Filename string    `json:"filename"`
+	MIMEType string    `json:"mime_type"`
 }
 
 func toResponse(tx *transaction.Transaction) transactionResponse {
@@ -36,15 +37,16 @@ func toResponse(tx *transaction.Transaction) transactionResponse {
 		Description:    tx.Description,
 		RawDescription: tx.RawDescription,
 		Date:           tx.Date,
-		InvoiceID:      tx.InvoiceID,
+		DocumentID:     tx.DocumentID,
 		CreatedAt:      tx.CreatedAt,
 		UpdatedAt:      tx.UpdatedAt,
 	}
 
-	if tx.Invoice != nil {
-		resp.Invoice = &invoiceResponse{
-			ID:  tx.Invoice.ID,
-			URL: tx.Invoice.URL,
+	if tx.Document != nil {
+		resp.Document = &documentResponse{
+			ID:       tx.Document.ID,
+			Filename: tx.Document.Filename,
+			MIMEType: tx.Document.MIMEType,
 		}
 	}
 

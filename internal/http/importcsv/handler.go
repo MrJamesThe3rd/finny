@@ -1,7 +1,6 @@
 package importcsv
 
 import (
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"time"
@@ -9,6 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/MrJamesThe3rd/finny/internal/httputil"
 	"github.com/MrJamesThe3rd/finny/internal/importer"
 	"github.com/MrJamesThe3rd/finny/internal/matching"
 	"github.com/MrJamesThe3rd/finny/internal/transaction"
@@ -50,11 +50,11 @@ type importSuccessResponse struct {
 }
 
 type createParamsDTO struct {
-	Amount         int64            `json:"amount"`
-	Type           transaction.Type `json:"type"`
+	Amount         int64            `json:"amount"  validate:"required,ne=0"`
+	Type           transaction.Type `json:"type"    validate:"required,oneof=income expense"`
 	Description    string           `json:"description"`
 	RawDescription string           `json:"raw_description"`
-	Date           time.Time        `json:"date"`
+	Date           time.Time        `json:"date"    validate:"required"`
 }
 
 type conflictDTO struct {
@@ -73,26 +73,26 @@ type confirmRequest struct {
 
 func (h *Handler) importCSV(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseMultipartForm(10 << 20); err != nil {
-		http.Error(w, "failed to parse form: "+err.Error(), http.StatusBadRequest)
+		httputil.BadRequest(w, "Failed to parse multipart form.")
 		return
 	}
 
 	bank := importer.Bank(r.FormValue("bank"))
 	if bank == "" {
-		http.Error(w, "bank field is required", http.StatusBadRequest)
+		httputil.BadRequest(w, "The bank field is required.")
 		return
 	}
 
 	file, _, err := r.FormFile("file")
 	if err != nil {
-		http.Error(w, "file field is required", http.StatusBadRequest)
+		httputil.BadRequest(w, "The file field is required.")
 		return
 	}
 	defer file.Close()
 
 	params, err := h.importSvc.Import(bank, file)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		httputil.BadRequest(w, "Failed to parse CSV file.")
 		return
 	}
 
@@ -101,17 +101,16 @@ func (h *Handler) importCSV(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			continue
 		}
-
 		if suggested == "" {
 			continue
 		}
-
 		params[i].Description = suggested
 	}
 
 	result, err := h.txSvc.ImportBatch(r.Context(), params)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		slog.Error("failed to import transactions", "error", err)
+		httputil.InternalError(w)
 		return
 	}
 
@@ -123,37 +122,35 @@ func (h *Handler) importCSV(w http.ResponseWriter, r *http.Request) {
 		for _, p := range result.New {
 			resp.New = append(resp.New, toParamsDTO(p))
 		}
-
 		for _, c := range result.Conflicts {
 			resp.Conflicts = append(resp.Conflicts, conflictDTO{
 				Incoming: toParamsDTO(c.Incoming),
 				Existing: toTxResponse(c.Existing),
 			})
 		}
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusConflict)
-
-		if err := json.NewEncoder(w).Encode(resp); err != nil {
-			slog.Error("failed to encode response", "error", err)
-		}
-
+		httputil.WriteJSON(w, http.StatusConflict, resp)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-
-	if err := json.NewEncoder(w).Encode(toSuccessResponse(result.Imported)); err != nil {
-		slog.Error("failed to encode response", "error", err)
-	}
+	httputil.WriteJSON(w, http.StatusCreated, toSuccessResponse(result.Imported))
 }
 
 func (h *Handler) confirmImport(w http.ResponseWriter, r *http.Request) {
 	var req confirmRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+	if err := httputil.DecodeJSON(r, &req); err != nil {
+		httputil.BadRequest(w, "Invalid request body.")
 		return
+	}
+
+	if len(req.Params) == 0 {
+		httputil.BadRequest(w, "params must not be empty.")
+		return
+	}
+
+	for _, p := range req.Params {
+		if !httputil.Validate(w, p) {
+			return
+		}
 	}
 
 	params := make([]transaction.CreateParams, 0, len(req.Params))
@@ -170,16 +167,12 @@ func (h *Handler) confirmImport(w http.ResponseWriter, r *http.Request) {
 
 	txs, err := h.txSvc.CreateBatch(r.Context(), params)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		slog.Error("failed to confirm import", "error", err)
+		httputil.InternalError(w)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-
-	if err := json.NewEncoder(w).Encode(toSuccessResponse(txs)); err != nil {
-		slog.Error("failed to encode response", "error", err)
-	}
+	httputil.WriteJSON(w, http.StatusCreated, toSuccessResponse(txs))
 }
 
 func toSuccessResponse(txs []*transaction.Transaction) importSuccessResponse {
@@ -187,7 +180,6 @@ func toSuccessResponse(txs []*transaction.Transaction) importSuccessResponse {
 	for _, tx := range txs {
 		responses = append(responses, toTxResponse(tx))
 	}
-
 	return importSuccessResponse{
 		Imported:     len(txs),
 		Transactions: responses,

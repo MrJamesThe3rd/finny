@@ -1,12 +1,12 @@
 package matching
 
 import (
-	"encoding/json"
 	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/MrJamesThe3rd/finny/internal/httputil"
 	"github.com/MrJamesThe3rd/finny/internal/matching"
 )
 
@@ -31,45 +31,41 @@ type suggestResponse struct {
 func (h *Handler) suggest(w http.ResponseWriter, r *http.Request) {
 	rawDesc := r.URL.Query().Get("raw_description")
 	if rawDesc == "" {
-		http.Error(w, "raw_description query parameter is required", http.StatusBadRequest)
+		httputil.BadRequest(w, "The raw_description query parameter is required.")
 		return
 	}
 
 	preferred, err := h.svc.Suggest(r.Context(), rawDesc)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		slog.Error("failed to suggest description", "error", err)
+		httputil.InternalError(w)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-
-	if err := json.NewEncoder(w).Encode(suggestResponse{
+	httputil.WriteJSON(w, http.StatusOK, suggestResponse{
 		RawDescription:       rawDesc,
 		PreferredDescription: preferred,
-	}); err != nil {
-		slog.Error("failed to encode response", "error", err)
-	}
+	})
 }
 
 type learnRequest struct {
-	RawPattern           string `json:"raw_pattern"`
-	PreferredDescription string `json:"preferred_description"`
+	RawPattern           string `json:"raw_pattern"            validate:"required"`
+	PreferredDescription string `json:"preferred_description"  validate:"required"`
 }
 
 func (h *Handler) learn(w http.ResponseWriter, r *http.Request) {
 	var req learnRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if err := httputil.DecodeJSON(r, &req); err != nil {
+		httputil.BadRequest(w, "Invalid request body.")
 		return
 	}
-
-	if req.RawPattern == "" || req.PreferredDescription == "" {
-		http.Error(w, "raw_pattern and preferred_description are required", http.StatusBadRequest)
+	if !httputil.Validate(w, req) {
 		return
 	}
 
 	if err := h.svc.Learn(r.Context(), req.RawPattern, req.PreferredDescription); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		slog.Error("failed to learn description mapping", "error", err)
+		httputil.InternalError(w)
 		return
 	}
 

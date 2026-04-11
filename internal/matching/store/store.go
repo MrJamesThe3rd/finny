@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+
+	"github.com/MrJamesThe3rd/finny/internal/auth"
 )
 
 type Store struct {
@@ -18,14 +20,14 @@ func (s *Store) FindMatch(ctx context.Context, rawDescription string) (string, e
 	query := `
 		SELECT preferred_description
 		FROM description_mappings
-		WHERE $1 ILIKE '%' || raw_pattern || '%'
+		WHERE user_id = $1 AND $2 ILIKE '%' || raw_pattern || '%'
 		ORDER BY LENGTH(raw_pattern) DESC, created_at DESC
 		LIMIT 1
 	`
 
 	var preferred string
 
-	err := s.db.QueryRowContext(ctx, query, rawDescription).Scan(&preferred)
+	err := s.db.QueryRowContext(ctx, query, auth.UserID(ctx), rawDescription).Scan(&preferred)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return "", nil
@@ -39,11 +41,12 @@ func (s *Store) FindMatch(ctx context.Context, rawDescription string) (string, e
 
 func (s *Store) CreateMapping(ctx context.Context, rawPattern, preferredDescription string) error {
 	query := `
-		INSERT INTO description_mappings (raw_pattern, preferred_description, created_at)
-		VALUES ($1, $2, NOW())
+		INSERT INTO description_mappings (raw_pattern, preferred_description, user_id, created_at)
+		VALUES ($1, $2, $3, NOW())
+		ON CONFLICT (user_id, raw_pattern) DO UPDATE SET preferred_description = EXCLUDED.preferred_description
 	`
 
-	_, err := s.db.ExecContext(ctx, query, rawPattern, preferredDescription)
+	_, err := s.db.ExecContext(ctx, query, rawPattern, preferredDescription, auth.UserID(ctx))
 	if err != nil {
 		return fmt.Errorf("creating mapping: %w", err)
 	}

@@ -27,7 +27,8 @@ type Config struct {
 	}
 
 	Paperless struct {
-		Token string `envconfig:"PAPERLESS_TOKEN"`
+		BaseURL string `envconfig:"PAPERLESS_BASE_URL"`
+		Token   string `envconfig:"PAPERLESS_TOKEN"`
 	}
 }
 

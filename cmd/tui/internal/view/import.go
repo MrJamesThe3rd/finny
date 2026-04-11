@@ -48,7 +48,7 @@ type ImportModel struct {
 	err    error
 }
 
-func NewImportModel(txSvc *transaction.Service, impSvc *importer.Service) ImportModel {
+func NewImportModel(baseCtx context.Context, txSvc *transaction.Service, impSvc *importer.Service) ImportModel {
 	fp := filepicker.New()
 	fp.CurrentDirectory, _ = os.Getwd()
 	fp.ShowHidden = false
@@ -57,6 +57,7 @@ func NewImportModel(txSvc *transaction.Service, impSvc *importer.Service) Import
 	fp.SetHeight(15)
 
 	return ImportModel{
+		CommonModel:   CommonModel{baseCtx: baseCtx},
 		txService:     txSvc,
 		importService: impSvc,
 		filePicker:    fp,
@@ -299,6 +300,7 @@ type confirmResultMsg struct {
 }
 
 func (m ImportModel) importCmd(path string) tea.Cmd {
+	baseCtx := m.baseCtx
 	return func() tea.Msg {
 		f, err := os.Open(path)
 		if err != nil {
@@ -311,7 +313,7 @@ func (m ImportModel) importCmd(path string) tea.Cmd {
 			return importResultMsg{err: err}
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), importTimeout)
+		ctx, cancel := context.WithTimeout(baseCtx, importTimeout)
 		defer cancel()
 
 		result, err := m.txService.ImportBatch(ctx, params)
@@ -324,6 +326,7 @@ func (m ImportModel) importCmd(path string) tea.Cmd {
 }
 
 func (m ImportModel) confirmCmd() tea.Cmd {
+	baseCtx := m.baseCtx
 	newParams := m.newParams
 	conflicts := m.conflicts
 	selected := m.selected
@@ -340,7 +343,7 @@ func (m ImportModel) confirmCmd() tea.Cmd {
 			allParams = append(allParams, c.Incoming)
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), importTimeout)
+		ctx, cancel := context.WithTimeout(baseCtx, importTimeout)
 		defer cancel()
 
 		txs, err := m.txService.CreateBatch(ctx, allParams)
@@ -395,13 +398,13 @@ func (d conflictDelegate) Render(w io.Writer, m list.Model, index int, listItem 
 	line1 := fmt.Sprintf("%s%s %s  %s  %s",
 		cursor, checkbox,
 		FormatDate(incoming.Date),
-		FormatAmount(incoming.Amount),
+		FormatAmountSigned(incoming.Amount, incoming.Type),
 		incoming.Description,
 	)
 
 	line2 := fmt.Sprintf("      Existing: %s  %s  %s [%s]",
 		FormatDate(existing.Date),
-		FormatAmount(existing.Amount),
+		FormatAmountSigned(existing.Amount, existing.Type),
 		existing.Description,
 		existing.Status,
 	)

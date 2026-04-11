@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/MrJamesThe3rd/finny/internal/auth"
 	"github.com/MrJamesThe3rd/finny/internal/transaction"
 )
 
@@ -25,22 +26,20 @@ type scanner interface {
 	Scan(dest ...any) error
 }
 
-// scanTransaction reads a transaction row from the scanner and returns a populated Transaction.
-// Expected column order: id, amount, type, status, description, raw_description, date, invoice_id, invoice_url, created_at, updated_at, deleted_at
+// scanTransaction reads a transaction row and returns a populated Transaction.
+// Expected column order: id, amount, type, status, description, raw_description, date,
+// document_id, doc_filename, doc_mime_type, created_at, updated_at, deleted_at
 func scanTransaction(s scanner) (*transaction.Transaction, error) {
 	var tx transaction.Transaction
 
 	var typeStr, statusStr string
-
 	var rawDesc sql.NullString
-
-	var invID *uuid.UUID
-
-	var invoiceURL sql.NullString
+	var docID *uuid.UUID
+	var docFilename, docMIMEType sql.NullString
 
 	if err := s.Scan(
 		&tx.ID, &tx.Amount, &typeStr, &statusStr, &tx.Description, &rawDesc, &tx.Date,
-		&invID, &invoiceURL,
+		&docID, &docFilename, &docMIMEType,
 		&tx.CreatedAt, &tx.UpdatedAt, &tx.DeletedAt,
 	); err != nil {
 		return nil, err
@@ -49,12 +48,13 @@ func scanTransaction(s scanner) (*transaction.Transaction, error) {
 	tx.Type = transaction.Type(typeStr)
 	tx.Status = transaction.Status(statusStr)
 	tx.RawDescription = rawDesc.String
-	tx.InvoiceID = invID
+	tx.DocumentID = docID
 
-	if invoiceURL.Valid && invID != nil {
-		tx.Invoice = &transaction.Invoice{
-			ID:  *invID,
-			URL: invoiceURL.String,
+	if docID != nil && docFilename.Valid {
+		tx.Document = &transaction.Document{
+			ID:       *docID,
+			Filename: docFilename.String,
+			MIMEType: docMIMEType.String,
 		}
 	}
 
@@ -63,24 +63,25 @@ func scanTransaction(s scanner) (*transaction.Transaction, error) {
 
 const selectTransactionColumns = `
 	t.id, t.amount, t.type, t.status, t.description, t.raw_description, t.date,
-	t.invoice_id, i.url as invoice_url, t.created_at, t.updated_at, t.deleted_at
+	t.document_id, d.filename AS doc_filename, d.mime_type AS doc_mime_type,
+	t.created_at, t.updated_at, t.deleted_at
+`
+
+const transactionJoin = `
+	FROM transactions t
+	LEFT JOIN documents d ON t.document_id = d.id
 `
 
 func (s *Store) CreateTransaction(ctx context.Context, tx *transaction.Transaction) error {
 	query := `
-		INSERT INTO transactions (amount, type, status, description, raw_description, date, invoice_id, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+		INSERT INTO transactions (amount, type, status, description, raw_description, date, document_id, user_id, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
 		RETURNING id, created_at, updated_at
 	`
 
 	err := s.db.QueryRowContext(ctx, query,
-		tx.Amount,
-		tx.Type,
-		tx.Status,
-		tx.Description,
-		tx.RawDescription,
-		tx.Date,
-		tx.InvoiceID,
+		tx.Amount, tx.Type, tx.Status, tx.Description, tx.RawDescription,
+		tx.Date, tx.DocumentID, auth.UserID(ctx),
 	).Scan(&tx.ID, &tx.CreatedAt, &tx.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("creating transaction: %w", err)
@@ -90,12 +91,10 @@ func (s *Store) CreateTransaction(ctx context.Context, tx *transaction.Transacti
 }
 
 func (s *Store) GetTransaction(ctx context.Context, id uuid.UUID) (*transaction.Transaction, error) {
-	query := `SELECT ` + selectTransactionColumns + `
-		FROM transactions t
-		LEFT JOIN invoices i ON t.invoice_id = i.id
-		WHERE t.id = $1 AND t.deleted_at IS NULL`
+	query := `SELECT ` + selectTransactionColumns + transactionJoin +
+		`WHERE t.id = $1 AND t.user_id = $2 AND t.deleted_at IS NULL`
 
-	tx, err := scanTransaction(s.db.QueryRowContext(ctx, query, id))
+	tx, err := scanTransaction(s.db.QueryRowContext(ctx, query, id, auth.UserID(ctx)))
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, transaction.ErrNotFound
@@ -108,32 +107,26 @@ func (s *Store) GetTransaction(ctx context.Context, id uuid.UUID) (*transaction.
 }
 
 func (s *Store) ListTransactions(ctx context.Context, filter transaction.ListFilter) ([]*transaction.Transaction, error) {
-	query := `SELECT ` + selectTransactionColumns + `
-		FROM transactions t
-		LEFT JOIN invoices i ON t.invoice_id = i.id
-		WHERE t.deleted_at IS NULL`
+	query := `SELECT ` + selectTransactionColumns + transactionJoin +
+		`WHERE t.deleted_at IS NULL AND t.user_id = $1`
 
-	var args []any
-
-	argIdx := 1
+	args := []any{auth.UserID(ctx)}
+	argIdx := 2
 
 	if filter.Status != nil {
 		query += fmt.Sprintf(" AND t.status = $%d", argIdx)
-
 		args = append(args, *filter.Status)
 		argIdx++
 	}
 
 	if filter.StartDate != nil {
 		query += fmt.Sprintf(" AND t.date >= $%d", argIdx)
-
 		args = append(args, *filter.StartDate)
 		argIdx++
 	}
 
 	if filter.EndDate != nil {
 		query += fmt.Sprintf(" AND t.date <= $%d", argIdx)
-
 		args = append(args, *filter.EndDate)
 		argIdx++
 	}
@@ -157,26 +150,26 @@ func (s *Store) ListTransactions(ctx context.Context, filter transaction.ListFil
 		txs = append(txs, tx)
 	}
 
-	return txs, nil
+	return txs, rows.Err()
 }
 
 func (s *Store) UpdateTransaction(ctx context.Context, tx *transaction.Transaction) error {
 	query := `
 		UPDATE transactions
-		SET amount = $1, type = $2, status = $3, description = $4, invoice_id = $5, updated_at = NOW()
-		WHERE id = $6 AND deleted_at IS NULL
+		SET amount = $1, type = $2, status = $3, description = $4, updated_at = NOW()
+		WHERE id = $5 AND user_id = $6 AND deleted_at IS NULL
 	`
 
-	_, err := s.db.ExecContext(ctx, query,
-		tx.Amount,
-		tx.Type,
-		tx.Status,
-		tx.Description,
-		tx.InvoiceID,
-		tx.ID,
+	result, err := s.db.ExecContext(ctx, query,
+		tx.Amount, tx.Type, tx.Status, tx.Description,
+		tx.ID, auth.UserID(ctx),
 	)
 	if err != nil {
 		return fmt.Errorf("updating transaction: %w", err)
+	}
+
+	if n, _ := result.RowsAffected(); n == 0 {
+		return transaction.ErrNotFound
 	}
 
 	return nil
@@ -186,12 +179,16 @@ func (s *Store) UpdateStatus(ctx context.Context, id uuid.UUID, status transacti
 	query := `
 		UPDATE transactions
 		SET status = $1, updated_at = NOW()
-		WHERE id = $2 AND deleted_at IS NULL
+		WHERE id = $2 AND user_id = $3 AND deleted_at IS NULL
 	`
 
-	_, err := s.db.ExecContext(ctx, query, status, id)
+	result, err := s.db.ExecContext(ctx, query, status, id, auth.UserID(ctx))
 	if err != nil {
 		return fmt.Errorf("updating status: %w", err)
+	}
+
+	if n, _ := result.RowsAffected(); n == 0 {
+		return transaction.ErrNotFound
 	}
 
 	return nil
@@ -201,49 +198,67 @@ func (s *Store) DeleteTransaction(ctx context.Context, id uuid.UUID) error {
 	query := `
 		UPDATE transactions
 		SET deleted_at = NOW()
-		WHERE id = $1
+		WHERE id = $1 AND user_id = $2
 	`
 
-	_, err := s.db.ExecContext(ctx, query, id)
+	result, err := s.db.ExecContext(ctx, query, id, auth.UserID(ctx))
 	if err != nil {
 		return fmt.Errorf("deleting transaction: %w", err)
+	}
+
+	if n, _ := result.RowsAffected(); n == 0 {
+		return transaction.ErrNotFound
 	}
 
 	return nil
 }
 
-// UpdateInvoice finds or creates an invoice by URL and links it to the transaction.
-// Both operations are wrapped in a database transaction for atomicity.
-func (s *Store) UpdateInvoice(ctx context.Context, txID uuid.UUID, invoiceURL string) error {
-	dbTx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("beginning transaction: %w", err)
-	}
-	defer dbTx.Rollback()
-
-	invoiceQuery := `
-		INSERT INTO invoices (url)
-		VALUES ($1)
-		ON CONFLICT (url) DO UPDATE SET url = EXCLUDED.url
-		RETURNING id
-	`
-
-	var invoiceID uuid.UUID
-	if err := dbTx.QueryRowContext(ctx, invoiceQuery, invoiceURL).Scan(&invoiceID); err != nil {
-		return fmt.Errorf("upserting invoice: %w", err)
-	}
-
-	txQuery := `
+// AttachDocument links a document to a transaction and sets its status to complete.
+// Returns ErrDocumentAlreadyAttached if the transaction already has a document,
+// ensuring the check-then-attach is atomic at the DB level.
+func (s *Store) AttachDocument(ctx context.Context, txID uuid.UUID, documentID uuid.UUID) error {
+	query := `
 		UPDATE transactions
-		SET invoice_id = $1, updated_at = NOW()
-		WHERE id = $2 AND deleted_at IS NULL
+		SET document_id = $1, status = 'complete', updated_at = NOW()
+		WHERE id = $2 AND user_id = $3 AND deleted_at IS NULL AND document_id IS NULL
 	`
-	if _, err := dbTx.ExecContext(ctx, txQuery, invoiceID, txID); err != nil {
-		return fmt.Errorf("linking invoice to transaction: %w", err)
+
+	result, err := s.db.ExecContext(ctx, query, documentID, txID, auth.UserID(ctx))
+	if err != nil {
+		return fmt.Errorf("attaching document: %w", err)
 	}
 
-	if err := dbTx.Commit(); err != nil {
-		return fmt.Errorf("committing transaction: %w", err)
+	if n, _ := result.RowsAffected(); n == 0 {
+		// Distinguish "already has document" from "not found".
+		var exists bool
+		checkQuery := `SELECT EXISTS(SELECT 1 FROM transactions WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL)`
+		if err := s.db.QueryRowContext(ctx, checkQuery, txID, auth.UserID(ctx)).Scan(&exists); err != nil {
+			return fmt.Errorf("checking transaction: %w", err)
+		}
+		if !exists {
+			return transaction.ErrNotFound
+		}
+		return transaction.ErrDocumentAlreadyAttached
+	}
+
+	return nil
+}
+
+// DetachDocument clears the document link from a transaction and resets its status to pending_invoice.
+func (s *Store) DetachDocument(ctx context.Context, txID uuid.UUID) error {
+	query := `
+		UPDATE transactions
+		SET document_id = NULL, status = 'pending_invoice', updated_at = NOW()
+		WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
+	`
+
+	result, err := s.db.ExecContext(ctx, query, txID, auth.UserID(ctx))
+	if err != nil {
+		return fmt.Errorf("detaching document: %w", err)
+	}
+
+	if n, _ := result.RowsAffected(); n == 0 {
+		return transaction.ErrNotFound
 	}
 
 	return nil
@@ -292,7 +307,6 @@ func (itx *importTx) FindDuplicates(ctx context.Context, params []transaction.Cr
 		RawDescription string
 	}
 
-	// Find min/max dates and build lookup set.
 	minDate := params[0].Date
 	maxDate := params[0].Date
 	keySet := make(map[lookupKey]struct{}, len(params))
@@ -314,14 +328,11 @@ func (itx *importTx) FindDuplicates(ctx context.Context, params []transaction.Cr
 		}] = struct{}{}
 	}
 
-	// Query all non-deleted transactions in the date range.
-	query := `SELECT ` + selectTransactionColumns + `
-		FROM transactions t
-		LEFT JOIN invoices i ON t.invoice_id = i.id
-		WHERE t.deleted_at IS NULL AND t.date >= $1 AND t.date <= $2
+	query := `SELECT ` + selectTransactionColumns + transactionJoin +
+		`WHERE t.deleted_at IS NULL AND t.user_id = $1 AND t.date >= $2 AND t.date <= $3
 		ORDER BY t.date ASC`
 
-	rows, err := itx.tx.QueryContext(ctx, query, minDate, maxDate)
+	rows, err := itx.tx.QueryContext(ctx, query, auth.UserID(ctx), minDate, maxDate)
 	if err != nil {
 		return nil, fmt.Errorf("finding duplicates: %w", err)
 	}
@@ -342,12 +353,9 @@ func (itx *importTx) FindDuplicates(ctx context.Context, params []transaction.Cr
 			RawDescription: tx.RawDescription,
 		}
 
-		_, found := keySet[k]
-		if !found {
-			continue
+		if _, found := keySet[k]; found {
+			duplicates = append(duplicates, tx)
 		}
-
-		duplicates = append(duplicates, tx)
 	}
 
 	if err := rows.Err(); err != nil {
@@ -359,20 +367,17 @@ func (itx *importTx) FindDuplicates(ctx context.Context, params []transaction.Cr
 
 func (itx *importTx) CreateTransactions(ctx context.Context, txs []*transaction.Transaction) error {
 	query := `
-		INSERT INTO transactions (amount, type, status, description, raw_description, date, invoice_id, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+		INSERT INTO transactions (amount, type, status, description, raw_description, date, document_id, user_id, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
 		RETURNING id, created_at, updated_at
 	`
 
+	userID := auth.UserID(ctx)
+
 	for _, tx := range txs {
 		err := itx.tx.QueryRowContext(ctx, query,
-			tx.Amount,
-			tx.Type,
-			tx.Status,
-			tx.Description,
-			tx.RawDescription,
-			tx.Date,
-			tx.InvoiceID,
+			tx.Amount, tx.Type, tx.Status, tx.Description, tx.RawDescription,
+			tx.Date, tx.DocumentID, userID,
 		).Scan(&tx.ID, &tx.CreatedAt, &tx.UpdatedAt)
 		if err != nil {
 			return fmt.Errorf("creating transaction: %w", err)

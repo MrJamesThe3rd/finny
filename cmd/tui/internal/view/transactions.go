@@ -1,16 +1,23 @@
 package view
 
 import (
+	"context"
 	"fmt"
 	"io"
+	"mime"
+	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/filepicker"
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/MrJamesThe3rd/finny/internal/document"
 	"github.com/MrJamesThe3rd/finny/internal/matching"
 	"github.com/MrJamesThe3rd/finny/internal/transaction"
 )
@@ -21,6 +28,7 @@ const (
 	txStateTimeframe txState = iota
 	txStateList
 	txStateEditing
+	txStateFilePick
 )
 
 // txItem wraps a transaction to implement list.Item.
@@ -36,12 +44,12 @@ func (i txItem) Title() string {
 		desc = i.tx.RawDescription
 	}
 
-	return fmt.Sprintf("%s  %s  %s  %s", FormatDate(i.tx.Date), FormatAmount(i.tx.Amount), status, desc)
+	return fmt.Sprintf("%s  %s  %s  %s", FormatDate(i.tx.Date), FormatAmountSigned(i.tx.Amount, i.tx.Type), status, desc)
 }
 
 func (i txItem) Description() string {
-	if i.tx.Invoice != nil && i.tx.Invoice.URL != "" {
-		return fmt.Sprintf("Invoice: %s", i.tx.Invoice.URL)
+	if i.tx.Document != nil && i.tx.Document.Filename != "" {
+		return fmt.Sprintf("Document: %s", i.tx.Document.Filename)
 	}
 
 	return ""
@@ -60,11 +68,13 @@ type TransactionsModel struct {
 	CommonModel
 	txService       *transaction.Service
 	matchingService *matching.Service
+	docService      *document.Service
 
 	state           txState
 	timeframePicker TimeframePicker
 	list            list.Model
 	form            *huh.Form
+	filePicker      filepicker.Model
 	txs             []*transaction.Transaction
 	selectedTx      *transaction.Transaction
 
@@ -75,23 +85,32 @@ type TransactionsModel struct {
 	status    string
 
 	// Form field bindings
-	formDesc  string
-	formURL   string
-	formNoInv bool
+	formDesc      string
+	formDocAction string
 }
 
-func NewTransactionsModel(txSvc *transaction.Service, matchSvc *matching.Service) TransactionsModel {
+func NewTransactionsModel(baseCtx context.Context, txSvc *transaction.Service, matchSvc *matching.Service, docSvc *document.Service) TransactionsModel {
 	l := list.New([]list.Item{}, txItemDelegate{}, 0, 0)
 	l.Title = "Transactions"
 	l.SetShowStatusBar(true)
 	l.SetFilteringEnabled(true)
 	l.SetShowHelp(true)
 
+	fp := filepicker.New()
+	fp.CurrentDirectory, _ = os.Getwd()
+	fp.ShowHidden = false
+	fp.DirAllowed = false
+	fp.FileAllowed = true
+	fp.SetHeight(15)
+
 	return TransactionsModel{
+		CommonModel:     CommonModel{baseCtx: baseCtx},
 		txService:       txSvc,
 		matchingService: matchSvc,
+		docService:      docSvc,
 		timeframePicker: NewTimeframePicker(TimeframeThisWeek),
 		list:            l,
+		filePicker:      fp,
 	}
 }
 
@@ -105,6 +124,8 @@ func (m TransactionsModel) ShortHelp() string {
 		return "Esc: back | Enter: edit | /: filter"
 	case txStateEditing:
 		return "Esc: cancel | Enter/Tab: navigate form"
+	case txStateFilePick:
+		return "Esc: cancel | Enter: select file"
 	}
 
 	return ""
@@ -166,6 +187,8 @@ func (m TransactionsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateList(msg)
 	case txStateEditing:
 		return m.updateEditing(msg)
+	case txStateFilePick:
+		return m.updateFilePick(msg)
 	}
 
 	return m, nil
@@ -216,16 +239,11 @@ func (m TransactionsModel) startEditing() (tea.Model, tea.Cmd) {
 
 	m.selectedTx = selected.tx
 	m.formDesc = selected.tx.Description
-	m.formURL = ""
-	m.formNoInv = false
-
-	if selected.tx.Invoice != nil {
-		m.formURL = selected.tx.Invoice.URL
-	}
+	m.formDocAction = "skip"
 
 	// Pre-populate description with suggestion if empty
 	if m.formDesc == "" && selected.tx.RawDescription != "" {
-		ctx, cancel := DbCtx()
+		ctx, cancel := DbCtx(m.baseCtx)
 		defer cancel()
 
 		suggestion, _ := m.matchingService.Suggest(ctx, selected.tx.RawDescription)
@@ -235,6 +253,21 @@ func (m TransactionsModel) startEditing() (tea.Model, tea.Cmd) {
 
 		if m.formDesc == "" {
 			m.formDesc = selected.tx.RawDescription
+		}
+	}
+
+	var docOptions []huh.Option[string]
+	if selected.tx.DocumentID != nil {
+		docOptions = []huh.Option[string]{
+			huh.NewOption("Keep current document", "skip"),
+			huh.NewOption("Replace with new file", "upload"),
+			huh.NewOption("Remove document", "remove"),
+		}
+	} else {
+		docOptions = []huh.Option[string]{
+			huh.NewOption("Upload file", "upload"),
+			huh.NewOption("No invoice needed", "no_invoice"),
+			huh.NewOption("Skip (decide later)", "skip"),
 		}
 	}
 
@@ -251,18 +284,11 @@ func (m TransactionsModel) startEditing() (tea.Model, tea.Cmd) {
 					return nil
 				}),
 
-			huh.NewInput().
-				Key("invoice_url").
-				Title("Invoice URL (optional)").
-				Placeholder("https://...").
-				Value(&m.formURL),
-
-			huh.NewConfirm().
-				Key("no_invoice").
-				Title("Mark as no invoice needed?").
-				Affirmative("Yes").
-				Negative("No").
-				Value(&m.formNoInv),
+			huh.NewSelect[string]().
+				Key("document_action").
+				Title("Document").
+				Options(docOptions...).
+				Value(&m.formDocAction),
 		),
 	).WithWidth(50).WithShowHelp(false)
 
@@ -290,8 +316,35 @@ func (m TransactionsModel) updateEditing(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
-	// Form completed - determine status and save
+	action := m.form.GetString("document_action")
+	desc := m.form.GetString("description")
+	m.formDesc = desc
+	m.formDocAction = action
+
+	if action == "upload" {
+		m.state = txStateFilePick
+		return m, m.filePicker.Init()
+	}
+
 	return m, m.saveTxCmd()
+}
+
+func (m TransactionsModel) updateFilePick(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		if keyMsg.Type == tea.KeyEsc {
+			m.state = txStateEditing
+			return m, m.form.Init()
+		}
+	}
+
+	var cmd tea.Cmd
+	m.filePicker, cmd = m.filePicker.Update(msg)
+
+	if didSelect, path := m.filePicker.DidSelectFile(msg); didSelect {
+		return m, m.saveTxWithFileCmd(path)
+	}
+
+	return m, cmd
 }
 
 func (m TransactionsModel) View() string {
@@ -321,6 +374,11 @@ func (m TransactionsModel) View() string {
 		return lipgloss.NewStyle().Padding(1).Render(
 			info + "\n" + m.form.View(),
 		)
+
+	case txStateFilePick:
+		return lipgloss.NewStyle().Padding(1).Render(
+			"Select a file to upload:\n\n" + m.filePicker.View(),
+		)
 	}
 
 	return ""
@@ -339,7 +397,7 @@ func (m TransactionsModel) txInfoView() string {
 			"Date: %s  |  Type: %s  |  Amount: %s\nRaw: %s",
 			FormatDate(m.selectedTx.Date),
 			m.selectedTx.Type,
-			FormatAmount(m.selectedTx.Amount),
+			FormatAmountSigned(m.selectedTx.Amount, m.selectedTx.Type),
 			m.selectedTx.RawDescription,
 		))
 }
@@ -362,7 +420,7 @@ type loadTxsMsg struct {
 
 func (m TransactionsModel) loadTxsCmd() tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := DbCtx()
+		ctx, cancel := DbCtx(m.baseCtx)
 		defer cancel()
 
 		filter := transaction.ListFilter{}
@@ -383,48 +441,130 @@ type saveTxResultMsg struct {
 	err error
 }
 
+// saveTxCmd handles all non-upload actions (skip, no_invoice, remove).
 func (m TransactionsModel) saveTxCmd() tea.Cmd {
-	tx := m.selectedTx
+	txCopy := *m.selectedTx
 	desc := m.formDesc
-	url := m.formURL
-	noInvoice := m.formNoInv
-	rawDesc := tx.RawDescription
+	action := m.formDocAction
+	rawDesc := txCopy.RawDescription
 	matchSvc := m.matchingService
 	txSvc := m.txService
+	docSvc := m.docService
+	baseCtx := m.baseCtx
 
 	return func() tea.Msg {
-		ctx, cancel := DbCtx()
+		ctx, cancel := DbCtx(baseCtx)
 		defer cancel()
 
-		// Learn description mapping
 		if rawDesc != "" && desc != "" {
 			_ = matchSvc.Learn(ctx, rawDesc, desc)
 		}
 
-		tx.Description = desc
+		txCopy.Description = desc
 
-		// Determine new status
-		switch {
-		case noInvoice:
-			tx.Status = transaction.StatusNoInvoice
-		case url != "":
-			tx.Status = transaction.StatusComplete
-		default:
-			tx.Status = transaction.StatusPendingInvoice
-		}
-
-		if err := txSvc.Update(ctx, tx); err != nil {
-			return saveTxResultMsg{err: err}
-		}
-
-		if url != "" {
-			if err := txSvc.AttachInvoice(ctx, tx.ID, url); err != nil {
-				return saveTxResultMsg{err: err}
+		switch action {
+		case "no_invoice":
+			txCopy.Status = transaction.StatusNoInvoice
+		case "remove":
+			if txCopy.DocumentID != nil {
+				if err := docSvc.Delete(ctx, *txCopy.DocumentID); err != nil {
+					return saveTxResultMsg{err: err}
+				}
+				if err := txSvc.DetachDocument(ctx, txCopy.ID); err != nil {
+					return saveTxResultMsg{err: err}
+				}
+				txCopy.Status = transaction.StatusPendingInvoice
 			}
+		case "skip":
+			// Keep current status
+		}
+
+		if err := txSvc.Update(ctx, &txCopy); err != nil {
+			return saveTxResultMsg{err: err}
 		}
 
 		return saveTxResultMsg{}
 	}
+}
+
+// saveTxWithFileCmd uploads the selected file and attaches it to the transaction.
+func (m TransactionsModel) saveTxWithFileCmd(filePath string) tea.Cmd {
+	txCopy := *m.selectedTx
+	desc := m.formDesc
+	rawDesc := txCopy.RawDescription
+	matchSvc := m.matchingService
+	txSvc := m.txService
+	docSvc := m.docService
+	baseCtx := m.baseCtx
+
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(baseCtx, importTimeout)
+		defer cancel()
+
+		if rawDesc != "" && desc != "" {
+			_ = matchSvc.Learn(ctx, rawDesc, desc)
+		}
+
+		txCopy.Description = desc
+
+		f, err := os.Open(filePath)
+		if err != nil {
+			return saveTxResultMsg{err: fmt.Errorf("opening file: %w", err)}
+		}
+		defer f.Close()
+
+		mimeType := detectMIMEFromFile(f, filePath)
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return saveTxResultMsg{err: fmt.Errorf("seeking file: %w", err)}
+		}
+
+		// If replacing, delete the existing document first.
+		if txCopy.DocumentID != nil {
+			if err := docSvc.Delete(ctx, *txCopy.DocumentID); err != nil {
+				return saveTxResultMsg{err: err}
+			}
+			if err := txSvc.DetachDocument(ctx, txCopy.ID); err != nil {
+				return saveTxResultMsg{err: err}
+			}
+		}
+
+		doc, err := docSvc.Upload(ctx, filepath.Base(filePath), mimeType, f)
+		if err != nil {
+			return saveTxResultMsg{err: fmt.Errorf("uploading document: %w", err)}
+		}
+
+		if err := txSvc.AttachDocument(ctx, txCopy.ID, doc.ID); err != nil {
+			return saveTxResultMsg{err: fmt.Errorf("attaching document: %w", err)}
+		}
+
+		// AttachDocument already set status=complete; Update only touches description/status.
+		txCopy.Status = transaction.StatusComplete
+		if err := txSvc.Update(ctx, &txCopy); err != nil {
+			return saveTxResultMsg{err: err}
+		}
+
+		return saveTxResultMsg{}
+	}
+}
+
+// detectMIMEFromFile sniffs MIME type from the first 512 bytes, falling back to
+// the file extension.
+func detectMIMEFromFile(f *os.File, filePath string) string {
+	buf := make([]byte, 512)
+	n, _ := f.Read(buf)
+
+	detected := http.DetectContentType(buf[:n])
+	if detected != "application/octet-stream" {
+		return detected
+	}
+
+	if ext := filepath.Ext(filePath); ext != "" {
+		if t := mime.TypeByExtension(ext); t != "" {
+			return t
+		}
+	}
+
+	return detected
 }
 
 // txItemDelegate renders items in the list.

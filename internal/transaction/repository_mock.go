@@ -115,18 +115,32 @@ func (mr *MockRepositoryMockRecorder) ListTransactions(ctx, filter any) *gomock.
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListTransactions", reflect.TypeOf((*MockRepository)(nil).ListTransactions), ctx, filter)
 }
 
-// UpdateInvoice mocks base method.
-func (m *MockRepository) UpdateInvoice(ctx context.Context, id uuid.UUID, invoiceURL string) error {
+// AttachDocument mocks base method.
+func (m *MockRepository) AttachDocument(ctx context.Context, txID uuid.UUID, documentID uuid.UUID) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "UpdateInvoice", ctx, id, invoiceURL)
+	ret := m.ctrl.Call(m, "AttachDocument", ctx, txID, documentID)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
-// UpdateInvoice indicates an expected call of UpdateInvoice.
-func (mr *MockRepositoryMockRecorder) UpdateInvoice(ctx, id, invoiceURL any) *gomock.Call {
+// AttachDocument indicates an expected call of AttachDocument.
+func (mr *MockRepositoryMockRecorder) AttachDocument(ctx, txID, documentID any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateInvoice", reflect.TypeOf((*MockRepository)(nil).UpdateInvoice), ctx, id, invoiceURL)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AttachDocument", reflect.TypeOf((*MockRepository)(nil).AttachDocument), ctx, txID, documentID)
+}
+
+// DetachDocument mocks base method.
+func (m *MockRepository) DetachDocument(ctx context.Context, txID uuid.UUID) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DetachDocument", ctx, txID)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// DetachDocument indicates an expected call of DetachDocument.
+func (mr *MockRepositoryMockRecorder) DetachDocument(ctx, txID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DetachDocument", reflect.TypeOf((*MockRepository)(nil).DetachDocument), ctx, txID)
 }
 
 // UpdateStatus mocks base method.

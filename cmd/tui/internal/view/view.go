@@ -1,6 +1,8 @@
 package view
 
 import (
+	"context"
+
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -11,8 +13,11 @@ type View interface {
 	ShortHelp() string
 }
 
-// CommonModel is embedded by all views.
-type CommonModel struct{}
+// CommonModel is embedded by all views. It carries the base context (with user
+// identity) that command functions use as the parent for their DB timeouts.
+type CommonModel struct {
+	baseCtx context.Context
+}
 
 type BackMsg struct{}
 
