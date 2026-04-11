@@ -9,15 +9,22 @@ servers:
 
 tags:
   - name: Transactions
+    description: Create, read, update, and delete financial transactions
   - name: Documents
+    description: Upload and manage documents attached to transactions
   - name: Import
+    description: Two-step CSV import flow (parse then confirm)
   - name: Matching
+    description: Learn and suggest preferred descriptions for raw transaction text
   - name: Export
+    description: Export transactions and documents as a zip archive
   - name: Backends
+    description: Manage document storage backends (Paperless, local filesystem)
 
 paths:
   /transactions:
     post:
+      operationId: createTransaction
       summary: Create a transaction
       tags: [Transactions]
       requestBody:
@@ -38,6 +45,7 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
     get:
+      operationId: listTransactions
       summary: List transactions
       tags: [Transactions]
       parameters:
@@ -75,6 +83,7 @@ paths:
     parameters:
       - $ref: '#/components/parameters/TransactionID'
     get:
+      operationId: getTransaction
       summary: Get a transaction
       tags: [Transactions]
       responses:
@@ -91,6 +100,7 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
     delete:
+      operationId: deleteTransaction
       summary: Delete a transaction
       tags: [Transactions]
       responses:
@@ -103,6 +113,7 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
     patch:
+      operationId: updateTransaction
       summary: Update a transaction
       tags: [Transactions]
       requestBody:
@@ -129,6 +140,7 @@ paths:
     parameters:
       - $ref: '#/components/parameters/TransactionID'
     patch:
+      operationId: updateTransactionStatus
       summary: Update transaction status
       tags: [Transactions]
       requestBody:
@@ -151,6 +163,7 @@ paths:
     parameters:
       - $ref: '#/components/parameters/TransactionID'
     post:
+      operationId: uploadDocument
       summary: Upload a document for a transaction
       tags: [Documents]
       requestBody:
@@ -190,6 +203,7 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
     get:
+      operationId: downloadDocument
       summary: Download the document attached to a transaction
       tags: [Documents]
       responses:
@@ -207,6 +221,7 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
     delete:
+      operationId: deleteDocument
       summary: Delete the document attached to a transaction
       tags: [Documents]
       responses:
@@ -221,6 +236,7 @@ paths:
 
   /import:
     post:
+      operationId: importCSV
       summary: Parse a bank CSV file
       description: |
         Parses the uploaded CSV and checks for conflicts with existing transactions.
@@ -253,16 +269,13 @@ paths:
         '400':
           $ref: '#/components/responses/BadRequest'
         '409':
-          description: Import conflicts detected
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ImportConflictResponse'
+          $ref: '#/components/responses/Conflict'
         '500':
           $ref: '#/components/responses/InternalError'
 
   /import/confirm:
     post:
+      operationId: confirmImport
       summary: Confirm and persist parsed import rows
       tags: [Import]
       requestBody:
@@ -285,6 +298,7 @@ paths:
 
   /matching/suggest:
     get:
+      operationId: suggestDescription
       summary: Suggest a preferred description for a raw description
       tags: [Matching]
       parameters:
@@ -308,6 +322,7 @@ paths:
 
   /matching:
     post:
+      operationId: learnMapping
       summary: Learn a description mapping
       tags: [Matching]
       requestBody:
@@ -326,6 +341,7 @@ paths:
 
   /export:
     post:
+      operationId: getExportMetadata
       summary: Get export metadata and email body
       tags: [Export]
       requestBody:
@@ -348,6 +364,7 @@ paths:
 
   /export/download:
     post:
+      operationId: downloadExport
       summary: Download transactions and documents as a zip archive
       tags: [Export]
       requestBody:
@@ -371,6 +388,7 @@ paths:
 
   /backends:
     get:
+      operationId: listBackends
       summary: List document backends
       tags: [Backends]
       responses:
@@ -382,11 +400,10 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/Backend'
-        '400':
-          $ref: '#/components/responses/BadRequest'
         '500':
           $ref: '#/components/responses/InternalError'
     post:
+      operationId: createBackend
       summary: Create a document backend
       tags: [Backends]
       requestBody:
@@ -411,6 +428,7 @@ paths:
     parameters:
       - $ref: '#/components/parameters/BackendID'
     patch:
+      operationId: updateBackend
       summary: Update a document backend
       tags: [Backends]
       requestBody:
@@ -429,6 +447,7 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
     delete:
+      operationId: deleteBackend
       summary: Delete a document backend
       tags: [Backends]
       parameters:
@@ -445,11 +464,7 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          description: Backend still has documents (use ?force=true to override)
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+          $ref: '#/components/responses/Conflict'
         '500':
           $ref: '#/components/responses/InternalError'
 
@@ -481,6 +496,12 @@ components:
             $ref: '#/components/schemas/ErrorResponse'
     NotFound:
       description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Conflict:
+      description: Conflict
       content:
         application/json:
           schema:
@@ -555,19 +576,16 @@ components:
         id:
           type: string
           format: uuid
-        user_id:
-          type: string
-          format: uuid
         type:
           type: string
           enum: [paperless, local]
         name:
           type: string
-        config:
-          type: object
-          additionalProperties: true
         enabled:
           type: boolean
+        created_at:
+          type: string
+          format: date-time
 
     CreateTransactionRequest:
       type: object
@@ -627,6 +645,31 @@ components:
           type: string
           format: date-time
 
+    ImportedTransaction:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        amount:
+          type: integer
+          format: int64
+          description: Amount in cents
+        type:
+          $ref: '#/components/schemas/TransactionType'
+        status:
+          $ref: '#/components/schemas/TransactionStatus'
+        description:
+          type: string
+        raw_description:
+          type: string
+        date:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+
     ImportSuccessResponse:
       type: object
       properties:
@@ -635,7 +678,7 @@ components:
         transactions:
           type: array
           items:
-            $ref: '#/components/schemas/Transaction'
+            $ref: '#/components/schemas/ImportedTransaction'
 
     ConflictDTO:
       type: object
