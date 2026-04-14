@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/MrJamesThe3rd/finny/internal/auth"
+	authStore "github.com/MrJamesThe3rd/finny/internal/auth/store"
 	"github.com/MrJamesThe3rd/finny/internal/config"
 	"github.com/MrJamesThe3rd/finny/internal/database"
 	"github.com/MrJamesThe3rd/finny/internal/document"
@@ -16,6 +17,7 @@ import (
 	docStore "github.com/MrJamesThe3rd/finny/internal/document/store"
 	"github.com/MrJamesThe3rd/finny/internal/export"
 	finnyHttp "github.com/MrJamesThe3rd/finny/internal/http"
+	authHandler "github.com/MrJamesThe3rd/finny/internal/http/auth"
 	docHandler "github.com/MrJamesThe3rd/finny/internal/http/document"
 	exportHandler "github.com/MrJamesThe3rd/finny/internal/http/export"
 	importHandler "github.com/MrJamesThe3rd/finny/internal/http/importcsv"
@@ -47,6 +49,7 @@ func main() {
 	registry.Register("local", local.NewFromConfig)
 
 	var (
+		authService        = auth.NewService(authStore.New(db), cfg.Auth.JWTSecret, cfg.Auth.AccessTokenExpiry, cfg.Auth.RefreshTokenExpiry)
 		transactionService = transaction.NewService(txStore.New(db))
 		matchingService    = matching.NewService(matchingStore.New(db))
 		importService      = importer.NewService()
@@ -55,6 +58,7 @@ func main() {
 	)
 
 	if cfg.Paperless.BaseURL != "" {
+		// Seed with the default user until Phase 2 org management is in place.
 		seedCtx := auth.WithUserID(context.Background(), auth.DefaultUserID)
 		if err := documentService.SeedLegacyBackend(seedCtx, cfg.Paperless.BaseURL, cfg.Paperless.Token); err != nil {
 			slog.Warn("failed to seed legacy paperless backend", "error", err)
@@ -62,6 +66,7 @@ func main() {
 	}
 
 	var (
+		authH        = authHandler.NewHandler(authService)
 		transactionH = txHandler.NewHandler(transactionService)
 		importH      = importHandler.NewHandler(importService, transactionService, matchingService)
 		matchingH    = matchingHandler.NewHandler(matchingService)
@@ -69,7 +74,18 @@ func main() {
 		documentH    = docHandler.NewHandler(documentService, transactionService, registry)
 	)
 
-	router := finnyHttp.New(transactionH, importH, matchingH, exportH, documentH)
+	router := finnyHttp.New(
+		transactionH,
+		importH,
+		matchingH,
+		exportH,
+		documentH,
+		authH,
+		finnyHttp.Config{
+			JWTSecret:         cfg.Auth.JWTSecret,
+			CORSAllowedOrigin: cfg.Auth.CORSAllowedOrigin,
+		},
+	)
 
 	port := fmt.Sprintf(":%d", cfg.App.Port)
 	slog.Info("starting server", "port", port)
