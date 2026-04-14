@@ -30,6 +30,13 @@ type Config struct {
 		BaseURL string `envconfig:"PAPERLESS_BASE_URL"`
 		Token   string `envconfig:"PAPERLESS_TOKEN"`
 	}
+
+	Auth struct {
+		JWTSecret          string        `envconfig:"AUTH_JWTSECRET"          required:"true"`
+		AccessTokenExpiry  time.Duration `envconfig:"AUTH_ACCESSTOKENEXPIRY"  default:"15m"`
+		RefreshTokenExpiry time.Duration `envconfig:"AUTH_REFRESHTOKENEXPIRY" default:"168h"`
+		CORSAllowedOrigin  string        `envconfig:"AUTH_CORSALLOWEDORIGIN"  default:"http://localhost:5173"`
+	}
 }
 
 func (c *Config) ConnectionString() string {
