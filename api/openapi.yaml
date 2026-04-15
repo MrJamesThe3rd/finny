@@ -624,6 +624,8 @@ components:
         date:
           type: string
           format: date-time
+        no_invoice:
+          type: boolean
 
     UpdateStatusRequest:
       type: object

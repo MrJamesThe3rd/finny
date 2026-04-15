@@ -139,6 +139,7 @@ type updateTransactionRequest struct {
 	Amount      *int64            `json:"amount,omitempty"`
 	Type        *transaction.Type `json:"type,omitempty"`
 	Date        *time.Time        `json:"date,omitempty"`
+	NoInvoice   *bool             `json:"no_invoice,omitempty"`
 }
 
 func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
@@ -176,6 +177,19 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Date != nil {
 		tx.Date = *req.Date
+	}
+
+	// Auto-infer status from current state.
+	noInvoice := req.NoInvoice != nil && *req.NoInvoice
+	switch {
+	case noInvoice:
+		tx.Status = transaction.StatusNoInvoice
+	case tx.Description != "" && tx.DocumentID != nil:
+		tx.Status = transaction.StatusComplete
+	case tx.Description != "":
+		tx.Status = transaction.StatusPendingInvoice
+	default:
+		tx.Status = transaction.StatusDraft
 	}
 
 	if err := h.svc.Update(r.Context(), tx); err != nil {
