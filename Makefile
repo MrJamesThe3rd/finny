@@ -3,7 +3,7 @@ DATABASE_URL ?= postgres://finny:secret@localhost:5432/finny?sslmode=disable
 .PHONY: run build test start stop migrate-up migrate-down lint
 
 run:
-	go run cmd/api/main.go
+	@set -a && . ./.env && set +a && go run cmd/api/main.go
 
 build:
 	go build -o bin/api cmd/api/main.go

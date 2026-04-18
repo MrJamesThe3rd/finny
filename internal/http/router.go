@@ -43,6 +43,9 @@ func New(
 		AllowCredentials: true,
 	}))
 
+	// Handle OPTIONS preflight for all routes (CORS middleware responds before routing)
+	router.Options("/*", func(w http.ResponseWriter, r *http.Request) {})
+
 	// Public auth routes — no JWT required
 	router.Route("/api/v1/auth", authV1.PublicRoutes)
 
