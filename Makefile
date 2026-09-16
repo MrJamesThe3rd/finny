@@ -1,6 +1,6 @@
 DATABASE_URL ?= postgres://finny:secret@localhost:5432/finny?sslmode=disable
 
-.PHONY: run build test start stop migrate-up migrate-down lint
+.PHONY: run build test start stop migrate-up migrate-down lint mock seed-user
 
 run:
 	@set -a && . ./.env && set +a && go run cmd/api/main.go
@@ -30,3 +30,9 @@ lint:
 	wsl -fix ./... 2> /dev/null || true
 	golangci-lint run
 	go fmt ./... # This runs last to ensure comment lines have leading spaces
+
+mock:
+	go generate ./...
+
+seed-user:
+	@set -a && . ./.env && set +a && go run cmd/seed/main.go
