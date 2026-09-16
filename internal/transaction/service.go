@@ -97,7 +97,6 @@ func (s *Service) Delete(ctx context.Context, id uuid.UUID) error {
 	return s.repo.DeleteTransaction(ctx, id)
 }
 
-
 type ImportResult struct {
 	Imported  []*Transaction
 	New       []CreateParams

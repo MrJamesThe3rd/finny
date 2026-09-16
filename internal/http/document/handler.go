@@ -19,8 +19,8 @@ import (
 )
 
 type Handler struct {
-	docSvc  *document.Service
-	txSvc   *transaction.Service
+	docSvc   *document.Service
+	txSvc    *transaction.Service
 	registry *document.Registry
 }
 
