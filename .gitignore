@@ -191,6 +191,7 @@ $RECYCLE.BIN/
 ### Project ###
 # Binaries
 /tui
+/seed
 
 # Environment
 .env
