@@ -278,6 +278,12 @@ func (h *Handler) updateBackend(w http.ResponseWriter, r *http.Request) {
 			httputil.NotFound(w)
 			return
 		}
+
+		if errors.Is(err, document.ErrInvalidBackendConfig) {
+			httputil.BadRequest(w, "Invalid backend config.")
+			return
+		}
+
 		slog.Error("failed to update backend", "id", id, "error", err)
 		httputil.InternalError(w)
 		return

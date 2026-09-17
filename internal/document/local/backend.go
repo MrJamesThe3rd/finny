@@ -3,6 +3,7 @@ package local
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -23,82 +24,131 @@ type Backend struct {
 	basePath string
 }
 
-// NewFromConfig creates a local Backend from the JSONB config stored in the DB.
-func NewFromConfig(raw json.RawMessage) (document.Backend, error) {
+// Backends constructs local backends. Root confines base_path, which arrives
+// from user-supplied config and would otherwise name any path the process can
+// write to. See knowledge-base.md §4 for the storage trust model.
+type Backends struct {
+	Root string
+}
+
+func (b Backends) New(raw json.RawMessage) (document.Backend, error) {
 	var cfg Config
 	if err := json.Unmarshal(raw, &cfg); err != nil {
 		return nil, fmt.Errorf("local: invalid config: %w", err)
 	}
 
-	if cfg.BasePath == "" {
-		return nil, fmt.Errorf("local: base_path is required")
+	basePath, err := resolveUnderRoot(b.Root, cfg.BasePath)
+	if err != nil {
+		return nil, fmt.Errorf("local: %w", err)
 	}
 
-	return &Backend{basePath: cfg.BasePath}, nil
+	if err := os.MkdirAll(basePath, 0o750); err != nil {
+		return nil, fmt.Errorf("local: creating base path: %w", err)
+	}
+
+	return &Backend{basePath: basePath}, nil
+}
+
+// resolveUnderRoot interprets basePath as relative to root, returning the
+// absolute directory it names.
+func resolveUnderRoot(root, basePath string) (string, error) {
+	if root == "" {
+		return "", ErrRootNotConfigured
+	}
+
+	if basePath == "" {
+		return "", ErrBasePathRequired
+	}
+
+	if filepath.IsAbs(basePath) {
+		return "", ErrBasePathNotRelative
+	}
+
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return "", fmt.Errorf("resolving storage root: %w", err)
+	}
+
+	path := filepath.Join(absRoot, basePath)
+	if path != absRoot && !strings.HasPrefix(path, absRoot+string(os.PathSeparator)) {
+		return "", ErrBasePathEscapesRoot
+	}
+
+	return path, nil
 }
 
 func (b *Backend) Type() string { return "local" }
 
-// resolveKey joins the key with basePath and rejects any path that escapes basePath.
-func (b *Backend) resolveKey(key string) (string, error) {
-	path := filepath.Join(b.basePath, filepath.Clean(key))
-	base := filepath.Clean(b.basePath) + string(os.PathSeparator)
-	if !strings.HasPrefix(path+string(os.PathSeparator), base) {
-		return "", fmt.Errorf("local: key escapes base path: %s", key)
+// open returns an os.Root confined to basePath. Every file operation goes
+// through one: unlike a lexical prefix check, it is enforced by the OS per
+// path component, so a symlink planted under basePath cannot escape it.
+// The caller must close it.
+func (b *Backend) open() (*os.Root, error) {
+	root, err := os.OpenRoot(b.basePath)
+	if err != nil {
+		return nil, fmt.Errorf("local: opening base path: %w", err)
 	}
-	return path, nil
+
+	return root, nil
 }
 
 // Upload writes the content to <basePath>/<uuid>_<filename> and returns the
 // relative path as the storage key.
 func (b *Backend) Upload(_ context.Context, filename string, content io.Reader) (string, error) {
-	if err := os.MkdirAll(b.basePath, 0o750); err != nil {
-		return "", fmt.Errorf("local: creating base path: %w", err)
+	root, err := b.open()
+	if err != nil {
+		return "", err
 	}
 
-	key := uuid.New().String() + "_" + filepath.Base(filename)
-	dst := filepath.Join(b.basePath, key)
+	defer root.Close() //nolint:errcheck
 
-	f, err := os.Create(dst)
+	key := uuid.New().String() + "_" + filepath.Base(filename)
+
+	f, err := root.Create(key)
 	if err != nil {
 		return "", fmt.Errorf("local: creating file: %w", err)
 	}
-	defer f.Close()
+
+	defer f.Close() //nolint:errcheck
 
 	if _, err := io.Copy(f, content); err != nil {
-		_ = os.Remove(dst)
+		_ = root.Remove(key)
+
 		return "", fmt.Errorf("local: writing file: %w", err)
 	}
 
 	return key, nil
 }
 
-// Download opens the file at <basePath>/<key> and returns a ReadCloser.
 func (b *Backend) Download(_ context.Context, key string) (io.ReadCloser, error) {
-	path, err := b.resolveKey(key)
+	root, err := b.open()
 	if err != nil {
 		return nil, err
 	}
 
-	f, err := os.Open(path)
+	defer root.Close() //nolint:errcheck
+
+	f, err := root.Open(key)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("local: file not found: %s", key)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("local: %w: %s", ErrFileNotFound, key)
 		}
+
 		return nil, fmt.Errorf("local: opening file: %w", err)
 	}
 
 	return f, nil
 }
 
-// Delete removes the file at <basePath>/<key>.
 func (b *Backend) Delete(_ context.Context, key string) error {
-	path, err := b.resolveKey(key)
+	root, err := b.open()
 	if err != nil {
 		return err
 	}
 
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+	defer root.Close() //nolint:errcheck
+
+	if err := root.Remove(key); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("local: removing file: %w", err)
 	}
 

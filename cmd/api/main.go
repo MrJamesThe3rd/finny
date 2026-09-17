@@ -44,16 +44,16 @@ func main() {
 	}
 	defer db.Close()
 
-	registry := document.NewRegistry()
-	registry.Register("paperless", paperless.NewFromConfig)
-	registry.Register("local", local.NewFromConfig)
+	backends := document.NewRegistry()
+	backends.Register("paperless", paperless.Backends{AllowPrivate: cfg.Storage.AllowPrivateBackendHosts}.New)
+	backends.Register("local", local.Backends{Root: cfg.Storage.LocalRoot}.New)
 
 	var (
 		authService        = auth.NewService(authStore.New(db), cfg.Auth.JWTSecret, cfg.Auth.AccessTokenExpiry, cfg.Auth.RefreshTokenExpiry)
 		transactionService = transaction.NewService(txStore.New(db))
 		matchingService    = matching.NewService(matchingStore.New(db))
 		importService      = importer.NewService()
-		documentService    = document.NewService(docStore.New(db), registry)
+		documentService    = document.NewService(docStore.New(db), backends)
 		exportService      = export.NewService(transactionService, documentService)
 	)
 
@@ -71,7 +71,7 @@ func main() {
 		importH      = importHandler.NewHandler(importService, transactionService, matchingService)
 		matchingH    = matchingHandler.NewHandler(matchingService)
 		exportH      = exportHandler.NewHandler(exportService)
-		documentH    = docHandler.NewHandler(documentService, transactionService, registry)
+		documentH    = docHandler.NewHandler(documentService, transactionService, backends)
 	)
 
 	router := finnyHttp.New(

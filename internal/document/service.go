@@ -251,9 +251,63 @@ func (s *Service) CreateBackend(ctx context.Context, cfg *BackendConfig) error {
 	return s.repo.CreateBackend(ctx, cfg)
 }
 
-// UpdateBackend updates mutable fields of a backend configuration.
+// UpdateBackend updates mutable fields of a backend configuration. A config
+// patch is merged over the stored config and revalidated before it is written.
 func (s *Service) UpdateBackend(ctx context.Context, id uuid.UUID, name *string, config json.RawMessage, enabled *bool) error {
+	if config != nil {
+		merged, err := s.mergeBackendConfig(ctx, id, config)
+		if err != nil {
+			return err
+		}
+
+		config = merged
+	}
+
 	return s.repo.UpdateBackend(ctx, id, name, config, enabled)
+}
+
+// mergeBackendConfig folds a partial patch over the stored config.
+//
+// The update path is the only place a stored credential can be changed, so it
+// is also where a patch can do the most damage: repointing base_url while the
+// token survives turns the next request into a credential handoff to whatever
+// host was just set. Every patched key is therefore revalidated against the
+// backend type before it is persisted, and a patch may not blank a stored value
+// — clearing a credential is a delete-and-recreate, not a PATCH.
+func (s *Service) mergeBackendConfig(ctx context.Context, id uuid.UUID, patch json.RawMessage) (json.RawMessage, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(patch, &fields); err != nil {
+		return nil, fmt.Errorf("%w: config must be a JSON object", ErrInvalidBackendConfig)
+	}
+
+	existing, err := s.repo.GetBackend(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("getting backend: %w", err)
+	}
+
+	merged := map[string]json.RawMessage{}
+	if err := json.Unmarshal(existing.Config, &merged); err != nil {
+		return nil, fmt.Errorf("%w: stored config is not a JSON object", ErrInvalidBackendConfig)
+	}
+
+	for key, value := range fields {
+		if string(value) == "null" {
+			return nil, fmt.Errorf("%w: %q may not be set to null", ErrInvalidBackendConfig, key)
+		}
+
+		merged[key] = value
+	}
+
+	out, err := json.Marshal(merged)
+	if err != nil {
+		return nil, fmt.Errorf("marshalling merged config: %w", err)
+	}
+
+	if _, err := s.registry.Create(existing.Type, out); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidBackendConfig, err)
+	}
+
+	return out, nil
 }
 
 // DeleteBackend deletes a backend configuration.

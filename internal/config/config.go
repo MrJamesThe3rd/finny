@@ -31,6 +31,16 @@ type Config struct {
 		Token   string `envconfig:"PAPERLESS_TOKEN"`
 	}
 
+	// See knowledge-base.md §4 "Storage trust model" for why these exist.
+	Storage struct {
+		// LocalRoot confines every local backend's base_path.
+		LocalRoot string `envconfig:"STORAGE_LOCALROOT" default:"./data/documents"`
+
+		// AllowPrivateBackendHosts lets backends reach private addresses. Off by
+		// default: base_url is user-supplied and the response is streamed back.
+		AllowPrivateBackendHosts bool `envconfig:"STORAGE_ALLOWPRIVATEBACKENDHOSTS" default:"false"`
+	}
+
 	Auth struct {
 		JWTSecret          string        `envconfig:"AUTH_JWTSECRET"          required:"true"`
 		AccessTokenExpiry  time.Duration `envconfig:"AUTH_ACCESSTOKENEXPIRY"  default:"15m"`

@@ -18,6 +18,7 @@ import (
 func newTestBackend(srv *httptest.Server) *Backend {
 	return newBackend(
 		Config{BaseURL: srv.URL, Token: "test-token"},
+		true, // httptest listens on loopback
 		10*time.Millisecond,
 		5*time.Second,
 	)
@@ -117,6 +118,7 @@ func TestBackend_Upload_TaskTimeout(t *testing.T) {
 
 	b := newBackend(
 		Config{BaseURL: srv.URL, Token: "test-token"},
+		true,
 		10*time.Millisecond,
 		50*time.Millisecond, // very short timeout
 	)
