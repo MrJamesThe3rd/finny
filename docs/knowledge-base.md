@@ -136,6 +136,41 @@ type Backend interface {
   returns the existing document ID.
 - `local`: full implementation.
 
+#### Storage trust model
+
+Backend config is **user-supplied** — `base_url`, `base_path` and credentials all
+arrive as JSONB from an API caller, and today any authenticated user can write
+them. Three consequences shape the code, and each has exactly one home:
+
+1. **`base_url` is an SSRF vector, because the fetched body is streamed back to
+   the caller.** URL validation alone is not enough: a hostname can resolve
+   inward, and redirects re-dial. The control is `denyPrivateAddr`, a
+   `net.Dialer.Control` hook that judges the *resolved address of every
+   connection*. `netip`'s `IsPrivate`/`IsLoopback` are not sufficient — CGNAT
+   (`100.64/10`, Tailscale's range), NAT64, 6to4, IPv4-compatible IPv6 and the
+   test ranges are all global unicast, so they are denied by explicit prefix.
+   `STORAGE_ALLOWPRIVATEBACKENDHOSTS` opts out for a self-hosted Paperless on
+   localhost or a LAN; it is off by default. When the guard is on the transport
+   sets `Proxy = nil`, because a proxy would leave `Control` inspecting the
+   proxy's address while the real destination travels inside `CONNECT`.
+2. **`base_path` would otherwise name any path the process can write.**
+   `STORAGE_LOCALROOT` confines it, and file operations go through `os.Root`, so
+   confinement is enforced per path component by the OS — a lexical prefix check
+   cannot see a symlink planted inside the directory.
+3. **A config PATCH is the only way to change a stored credential**, so it is
+   merged and revalidated in `document.Service`, never in SQL. Repointing
+   `base_url` while the token survives would otherwise hand that token to the new
+   host on the next request. A patch may not set a key to `null`; clearing a
+   credential is a delete-and-recreate.
+
+Transport errors are replaced rather than wrapped: `url.Error` quotes the whole
+URL and `net.OpError`/`net.DNSError` name the host, so unwrapping one layer
+removes the scheme and leaves the host behind.
+
+Storage keys are validated as bare Paperless document IDs on the way in *and*
+on the way out, since a key is interpolated into a URL path and older rows
+predate the check.
+
 ### Import flow
 
 Parse CSV → `[]CreateParams` → `BeginImport(minDate, maxDate)` →

@@ -20,4 +20,8 @@ var (
 	// ErrBackendNotFound is returned when a backend ID does not exist or does not
 	// belong to the requesting user.
 	ErrBackendNotFound = errors.New("backend not found")
+
+	// ErrInvalidBackendConfig is returned when a backend config patch is not a
+	// JSON object, blanks a stored value, or does not validate for its type.
+	ErrInvalidBackendConfig = errors.New("invalid backend config")
 )

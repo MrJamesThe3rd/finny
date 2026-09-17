@@ -109,6 +109,10 @@ func (s *Store) CreateBackend(ctx context.Context, cfg *document.BackendConfig) 
 }
 
 func (s *Store) UpdateBackend(ctx context.Context, id uuid.UUID, name *string, config json.RawMessage, enabled *bool) error {
+	// config is replaced wholesale. Merging a partial patch is the service's
+	// job: jsonb || only merges at the top level, happily concatenates a
+	// non-object into an array, and cannot tell "set this key to null" from
+	// "leave it alone" — all three of which are reachable from a PATCH body.
 	query := `
 		UPDATE document_backends
 		SET
