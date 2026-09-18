@@ -89,6 +89,10 @@ func (s *Service) Refresh(ctx context.Context, rawRefreshToken string) (*LoginRe
 
 	user, err := s.repo.GetUserByID(ctx, rt.UserID)
 	if err != nil {
+		if errors.Is(err, ErrUserNotFound) {
+			return nil, ErrTokenInvalid
+		}
+
 		return nil, fmt.Errorf("get user: %w", err)
 	}
 
@@ -157,7 +161,9 @@ func (s *Service) ListUsers(ctx context.Context) ([]*User, error) {
 	return s.repo.ListUsers(ctx)
 }
 
-// DeleteUser removes a user by ID.
+// DeleteUser removes a user by ID. Returns ErrUserHasMemberships when the user
+// belongs to any organization: memberships.user_id is ON DELETE RESTRICT, so
+// the alternative is an opaque 500 from the FK.
 func (s *Service) DeleteUser(ctx context.Context, id uuid.UUID) error {
 	return s.repo.DeleteUser(ctx, id)
 }

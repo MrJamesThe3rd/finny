@@ -7,10 +7,11 @@ import (
 	"github.com/google/uuid"
 )
 
-// BackendConfig is a user-configured storage backend record from the DB.
+// BackendConfig is a configured storage backend record from the DB.
+// Ownership is the org_id column, read from ctx by the store — it is never
+// carried on this struct, so no caller can write the wrong one.
 type BackendConfig struct {
 	ID        uuid.UUID
-	UserID    uuid.UUID
 	Type      string          // "paperless", "local", …
 	Name      string          // user-friendly label
 	Config    json.RawMessage // backend-specific JSON (base_url, token, …)
@@ -21,7 +22,6 @@ type BackendConfig struct {
 // Document is a logical document (metadata only; content lives on backends).
 type Document struct {
 	ID        uuid.UUID
-	UserID    uuid.UUID
 	Filename  string
 	MIMEType  string
 	CreatedAt time.Time

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -22,10 +21,13 @@ import (
 	exportHandler "github.com/MrJamesThe3rd/finny/internal/http/export"
 	importHandler "github.com/MrJamesThe3rd/finny/internal/http/importcsv"
 	matchingHandler "github.com/MrJamesThe3rd/finny/internal/http/matching"
+	orgHandler "github.com/MrJamesThe3rd/finny/internal/http/org"
 	txHandler "github.com/MrJamesThe3rd/finny/internal/http/transaction"
 	"github.com/MrJamesThe3rd/finny/internal/importer"
 	"github.com/MrJamesThe3rd/finny/internal/matching"
 	matchingStore "github.com/MrJamesThe3rd/finny/internal/matching/store"
+	"github.com/MrJamesThe3rd/finny/internal/org"
+	orgStore "github.com/MrJamesThe3rd/finny/internal/org/store"
 	"github.com/MrJamesThe3rd/finny/internal/transaction"
 	txStore "github.com/MrJamesThe3rd/finny/internal/transaction/store"
 )
@@ -50,6 +52,7 @@ func main() {
 
 	var (
 		authService        = auth.NewService(authStore.New(db), cfg.Auth.JWTSecret, cfg.Auth.AccessTokenExpiry, cfg.Auth.RefreshTokenExpiry)
+		orgService         = org.NewService(orgStore.New(db))
 		transactionService = transaction.NewService(txStore.New(db))
 		matchingService    = matching.NewService(matchingStore.New(db))
 		importService      = importer.NewService()
@@ -57,16 +60,9 @@ func main() {
 		exportService      = export.NewService(transactionService, documentService)
 	)
 
-	if cfg.Paperless.BaseURL != "" {
-		// Seed with the default user until Phase 2 org management is in place.
-		seedCtx := auth.WithUserID(context.Background(), auth.DefaultUserID)
-		if err := documentService.SeedLegacyBackend(seedCtx, cfg.Paperless.BaseURL, cfg.Paperless.Token); err != nil {
-			slog.Warn("failed to seed legacy paperless backend", "error", err)
-		}
-	}
-
 	var (
 		authH        = authHandler.NewHandler(authService)
+		orgH         = orgHandler.NewHandler(orgService)
 		transactionH = txHandler.NewHandler(transactionService)
 		importH      = importHandler.NewHandler(importService, transactionService, matchingService)
 		matchingH    = matchingHandler.NewHandler(matchingService)
@@ -81,6 +77,8 @@ func main() {
 		exportH,
 		documentH,
 		authH,
+		orgH,
+		orgService,
 		finnyHttp.Config{
 			JWTSecret:         cfg.Auth.JWTSecret,
 			CORSAllowedOrigin: cfg.Auth.CORSAllowedOrigin,

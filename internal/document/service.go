@@ -8,20 +8,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"regexp"
 
 	"github.com/google/uuid"
-
-	"github.com/MrJamesThe3rd/finny/internal/auth"
 )
-
-// paperlessKeyRe extracts the numeric document ID from a Paperless-ngx URL.
-// e.g. "https://paperless.example.com/api/documents/42/download/" → "42"
-var paperlessKeyRe = regexp.MustCompile(`/api/documents/(\d+)/`)
-
-// LegacyPaperlessBackendID is the well-known UUID seeded by the
-// 20260404000002_add_document_store.sql migration for the migrated Paperless backend.
-var LegacyPaperlessBackendID = uuid.MustParse("00000000-0000-0000-0000-000000000002")
 
 // Service orchestrates document storage across multiple backends.
 type Service struct {
@@ -73,75 +62,13 @@ func (s *Service) Download(ctx context.Context, documentID uuid.UUID) (io.ReadCl
 	return nil, nil, fmt.Errorf("%w: %w", ErrNoAvailableLocation, errors.Join(errs...))
 }
 
-// AttachFromURL creates a document and location from a Paperless-ngx URL,
-// linking it to the user's first enabled Paperless backend.
-// Returns the created Document so the caller can link it to a transaction.
-func (s *Service) AttachFromURL(ctx context.Context, rawURL string) (*Document, error) {
-	matches := paperlessKeyRe.FindStringSubmatch(rawURL)
-	if matches == nil {
-		return nil, ErrURLNotSupported
-	}
-
-	key := matches[1]
-	userID := auth.UserID(ctx)
-
-	backends, err := s.repo.ListBackends(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("listing backends: %w", err)
-	}
-
-	var backendCfg *BackendConfig
-
-	for i := range backends {
-		if backends[i].Type == "paperless" && backends[i].Enabled && backends[i].UserID == userID {
-			backendCfg = &backends[i]
-			break
-		}
-	}
-
-	if backendCfg == nil {
-		return nil, ErrNoBackends
-	}
-
-	doc := &Document{
-		UserID:   userID,
-		Filename: "invoice",
-		MIMEType: "application/pdf",
-	}
-
-	if err := s.repo.CreateDocument(ctx, doc); err != nil {
-		return nil, fmt.Errorf("creating document: %w", err)
-	}
-
-	loc := &Location{
-		DocumentID: doc.ID,
-		BackendID:  backendCfg.ID,
-		Key:        key,
-	}
-
-	if err := s.repo.AddLocation(ctx, loc); err != nil {
-		return nil, fmt.Errorf("adding location: %w", err)
-	}
-
-	return doc, nil
-}
-
 // Upload stores the file on all enabled backends and returns the created Document.
 // Fails if no enabled backends are configured. Fails if any backend upload fails.
 // The caller must not close content before this returns.
 func (s *Service) Upload(ctx context.Context, filename, mimeType string, content io.Reader) (*Document, error) {
-	userID := auth.UserID(ctx)
-
-	backends, err := s.repo.ListBackends(ctx)
+	enabled, err := s.repo.ListEnabledBackends(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing backends: %w", err)
-	}
-
-	var enabled []BackendConfig
-	for _, b := range backends {
-		if b.Enabled && b.UserID == userID {
-			enabled = append(enabled, b)
-		}
 	}
 
 	if len(enabled) == 0 {
@@ -155,7 +82,6 @@ func (s *Service) Upload(ctx context.Context, filename, mimeType string, content
 	}
 
 	doc := &Document{
-		UserID:   userID,
 		Filename: filename,
 		MIMEType: mimeType,
 	}
@@ -178,7 +104,11 @@ func (s *Service) Upload(ctx context.Context, filename, mimeType string, content
 				slog.Warn("rollback: failed to delete from backend", "key", u.key, "error", err)
 			}
 		}
-		_ = s.repo.DeleteDocument(ctx, doc.ID)
+		// Unaudited: this is cleanup of a partly-failed upload, not someone
+		// destroying a document another user relied on.
+		if err := s.repo.PurgeDocument(ctx, doc.ID); err != nil {
+			slog.Warn("rollback: failed to purge document", "document_id", doc.ID, "error", err)
+		}
 	}
 
 	for _, cfg := range enabled {
@@ -318,20 +248,4 @@ func (s *Service) DeleteBackend(ctx context.Context, id uuid.UUID) error {
 // BackendHasDocuments reports whether any document location references the given backend.
 func (s *Service) BackendHasDocuments(ctx context.Context, backendID uuid.UUID) (bool, error) {
 	return s.repo.BackendHasDocuments(ctx, backendID)
-}
-
-// SeedLegacyBackend updates the legacy Paperless backend config from application config.
-// Called at startup so the migrated backend works without manual DB edits.
-func (s *Service) SeedLegacyBackend(ctx context.Context, baseURL, token string) error {
-	legacyID := LegacyPaperlessBackendID
-
-	cfg, err := json.Marshal(map[string]string{
-		"base_url": baseURL,
-		"token":    token,
-	})
-	if err != nil {
-		return fmt.Errorf("marshalling backend config: %w", err)
-	}
-
-	return s.repo.SetBackendConfig(ctx, legacyID, json.RawMessage(cfg))
 }

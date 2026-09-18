@@ -230,6 +230,13 @@ func (h *Handler) deleteUser(w http.ResponseWriter, r *http.Request) {
 			httputil.NotFound(w)
 			return
 		}
+
+		if errors.Is(err, auth.ErrUserHasMemberships) {
+			httputil.WriteError(w, http.StatusConflict, "USER_HAS_MEMBERSHIPS",
+				"This user belongs to an organization. Revoke their memberships first.")
+
+			return
+		}
 		slog.Error("delete user failed", "id", id, "error", err)
 		httputil.InternalError(w)
 		return

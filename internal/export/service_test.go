@@ -25,12 +25,15 @@ type mockTxRepo struct {
 func (m *mockTxRepo) CreateTransaction(_ context.Context, _ *transaction.Transaction) error {
 	return nil
 }
+
 func (m *mockTxRepo) GetTransaction(_ context.Context, _ uuid.UUID) (*transaction.Transaction, error) {
 	return nil, nil
 }
+
 func (m *mockTxRepo) UpdateTransaction(_ context.Context, _ *transaction.Transaction) error {
 	return nil
 }
+
 func (m *mockTxRepo) ListTransactions(_ context.Context, _ transaction.ListFilter) ([]*transaction.Transaction, error) {
 	return m.txs, nil
 }
@@ -42,6 +45,7 @@ func (m *mockTxRepo) DetachDocument(_ context.Context, _ uuid.UUID) error { retu
 func (m *mockTxRepo) UpdateStatus(_ context.Context, _ uuid.UUID, _ transaction.Status) error {
 	return nil
 }
+
 func (m *mockTxRepo) BeginImport(_ context.Context, _, _ time.Time) (transaction.ImportTx, error) {
 	return nil, nil
 }
@@ -61,6 +65,7 @@ func (m *mockDocRepo) ListBackends(_ context.Context) ([]document.BackendConfig,
 	}
 	return out, nil
 }
+
 func (m *mockDocRepo) GetBackend(_ context.Context, id uuid.UUID) (*document.BackendConfig, error) {
 	b, ok := m.backends[id]
 	if !ok {
@@ -68,14 +73,23 @@ func (m *mockDocRepo) GetBackend(_ context.Context, id uuid.UUID) (*document.Bac
 	}
 	return b, nil
 }
-func (m *mockDocRepo) SetBackendConfig(_ context.Context, _ uuid.UUID, _ json.RawMessage) error {
-	return nil
+
+func (m *mockDocRepo) ListEnabledBackends(_ context.Context) ([]document.BackendConfig, error) {
+	var out []document.BackendConfig
+	for _, b := range m.backends {
+		if b.Enabled {
+			out = append(out, *b)
+		}
+	}
+	return out, nil
 }
+
 func (m *mockDocRepo) CreateBackend(_ context.Context, cfg *document.BackendConfig) error {
 	cfg.ID = uuid.New()
 	m.backends[cfg.ID] = cfg
 	return nil
 }
+
 func (m *mockDocRepo) UpdateBackend(_ context.Context, _ uuid.UUID, _ *string, _ json.RawMessage, _ *bool) error {
 	return nil
 }
@@ -83,15 +97,23 @@ func (m *mockDocRepo) DeleteBackend(_ context.Context, _ uuid.UUID) error { retu
 func (m *mockDocRepo) BackendHasDocuments(_ context.Context, _ uuid.UUID) (bool, error) {
 	return false, nil
 }
+
 func (m *mockDocRepo) DeleteDocument(_ context.Context, id uuid.UUID) error {
 	delete(m.docs, id)
 	return nil
 }
+
+func (m *mockDocRepo) PurgeDocument(_ context.Context, id uuid.UUID) error {
+	delete(m.docs, id)
+	return nil
+}
+
 func (m *mockDocRepo) CreateDocument(_ context.Context, doc *document.Document) error {
 	doc.ID = uuid.New()
 	m.docs[doc.ID] = doc
 	return nil
 }
+
 func (m *mockDocRepo) GetDocument(_ context.Context, id uuid.UUID) (*document.Document, error) {
 	d, ok := m.docs[id]
 	if !ok {
@@ -99,10 +121,12 @@ func (m *mockDocRepo) GetDocument(_ context.Context, id uuid.UUID) (*document.Do
 	}
 	return d, nil
 }
+
 func (m *mockDocRepo) AddLocation(_ context.Context, loc *document.Location) error {
 	m.locations[loc.DocumentID] = append(m.locations[loc.DocumentID], *loc)
 	return nil
 }
+
 func (m *mockDocRepo) ListLocations(_ context.Context, documentID uuid.UUID) ([]document.Location, error) {
 	return m.locations[documentID], nil
 }
@@ -117,6 +141,7 @@ func (f *fakeBackend) Type() string { return "fake" }
 func (f *fakeBackend) Download(_ context.Context, _ string) (io.ReadCloser, error) {
 	return io.NopCloser(strings.NewReader(f.content)), nil
 }
+
 func (f *fakeBackend) Upload(_ context.Context, _ string, _ io.Reader) (string, error) {
 	return "", nil
 }

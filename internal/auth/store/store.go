@@ -9,7 +9,10 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/MrJamesThe3rd/finny/internal/auth"
+	"github.com/MrJamesThe3rd/finny/internal/database"
 )
+
+var _ auth.Repository = (*Store)(nil)
 
 // Store is the Postgres implementation of auth.Repository.
 type Store struct {
@@ -95,18 +98,42 @@ func (s *Store) ListUsers(ctx context.Context) ([]*auth.User, error) {
 }
 
 func (s *Store) DeleteUser(ctx context.Context, id uuid.UUID) error {
-	result, err := s.db.ExecContext(ctx, `DELETE FROM users WHERE id = $1`, id)
-	if err != nil {
-		return fmt.Errorf("deleting user: %w", err)
-	}
-	n, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("checking rows affected: %w", err)
-	}
-	if n == 0 {
-		return auth.ErrUserNotFound
-	}
-	return nil
+	return database.InTx(ctx, s.db, func(tx *sql.Tx) error {
+		// Lock the user row first. Inserting a membership takes a share lock on
+		// it for the FK check, so this serializes against a concurrent
+		// AddMember that would otherwise slip between the check below and the
+		// DELETE and surface as an opaque 500 from ON DELETE RESTRICT.
+		var exists bool
+
+		err := tx.QueryRowContext(ctx, `SELECT TRUE FROM users WHERE id = $1 FOR UPDATE`, id).Scan(&exists)
+		if errors.Is(err, sql.ErrNoRows) {
+			return auth.ErrUserNotFound
+		}
+
+		if err != nil {
+			return fmt.Errorf("locking user: %w", err)
+		}
+
+		var hasMemberships bool
+
+		if err := tx.QueryRowContext(ctx,
+			`SELECT EXISTS(SELECT 1 FROM memberships WHERE user_id = $1)`, id,
+		).Scan(&hasMemberships); err != nil {
+			return fmt.Errorf("checking memberships: %w", err)
+		}
+
+		if hasMemberships {
+			return auth.ErrUserHasMemberships
+		}
+
+		// refresh_tokens.user_id is ON DELETE CASCADE, so the user's sessions
+		// die with the row.
+		if _, err := tx.ExecContext(ctx, `DELETE FROM users WHERE id = $1`, id); err != nil {
+			return fmt.Errorf("deleting user: %w", err)
+		}
+
+		return nil
+	})
 }
 
 func (s *Store) UpdateLastLogin(ctx context.Context, id uuid.UUID) error {

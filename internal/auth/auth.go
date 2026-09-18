@@ -13,10 +13,6 @@ import (
 	"github.com/google/uuid"
 )
 
-// DefaultUserID is kept for backward compatibility during the migration period.
-// Remove once all callers use real JWT auth.
-var DefaultUserID = uuid.MustParse("00000000-0000-0000-0000-000000000001")
-
 // Claims are the JWT payload fields issued by this service.
 type Claims struct {
 	UserID  uuid.UUID `json:"user_id"`
