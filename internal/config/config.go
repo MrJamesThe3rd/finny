@@ -26,11 +26,6 @@ type Config struct {
 		Timeout time.Duration `envconfig:"SERVER_TIMEOUT" default:"30s"`
 	}
 
-	Paperless struct {
-		BaseURL string `envconfig:"PAPERLESS_BASE_URL"`
-		Token   string `envconfig:"PAPERLESS_TOKEN"`
-	}
-
 	// See knowledge-base.md §4 "Storage trust model" for why these exist.
 	Storage struct {
 		// LocalRoot confines every local backend's base_path.

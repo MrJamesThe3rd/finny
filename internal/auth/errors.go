@@ -19,4 +19,10 @@ var (
 
 	// ErrPasswordTooShort is returned when a password does not meet the minimum length.
 	ErrPasswordTooShort = errors.New("password must be at least 8 characters")
+
+	// ErrUserHasMemberships is returned when deleting a user who holds
+	// memberships. Those rows are append-only — a revoked membership is still
+	// the record that someone had access during a period they signed off — so
+	// a user who has ever belonged to an organization cannot be deleted.
+	ErrUserHasMemberships = errors.New("user still has organization memberships")
 )

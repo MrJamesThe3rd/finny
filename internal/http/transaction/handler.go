@@ -9,7 +9,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	finnyMiddleware "github.com/MrJamesThe3rd/finny/internal/http/middleware"
 	"github.com/MrJamesThe3rd/finny/internal/httputil"
+	"github.com/MrJamesThe3rd/finny/internal/org"
 	"github.com/MrJamesThe3rd/finny/internal/transaction"
 )
 
@@ -25,9 +27,36 @@ func (h *Handler) Routes(r chi.Router) {
 	r.Post("/", h.create)
 	r.Get("/", h.list)
 	r.Get("/{id}", h.get)
-	r.Delete("/{id}", h.delete)
+	r.With(finnyMiddleware.RequireOwner).Delete("/{id}", h.delete)
 	r.Patch("/{id}/status", h.updateStatus)
 	r.Patch("/{id}", h.update)
+}
+
+// allowStatus enforces the owner-only transitions. It is applied to BOTH
+// status-writing paths: PATCH /{id} infers a status from the no_invoice flag,
+// so gating only PATCH /{id}/status leaves the policy bypassable.
+// Writes the error response and returns false when the caller may not proceed.
+func allowStatus(w http.ResponseWriter, r *http.Request, status transaction.Status) bool {
+	if !transaction.OwnerOnlyStatus(status) {
+		return true
+	}
+
+	membership, err := org.CurrentMembership(r.Context())
+	if err != nil {
+		slog.Error("no membership in context", "path", r.URL.Path)
+		httputil.InternalError(w)
+
+		return false
+	}
+
+	if membership.Role != org.RoleOwner {
+		httputil.WriteError(w, http.StatusForbidden, "ROLE_FORBIDDEN",
+			"Only the organization's owner may set this status.")
+
+		return false
+	}
+
+	return true
 }
 
 type createTransactionRequest struct {
@@ -192,6 +221,10 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 		tx.Status = transaction.StatusDraft
 	}
 
+	if !allowStatus(w, r, tx.Status) {
+		return
+	}
+
 	if err := h.svc.Update(r.Context(), tx); err != nil {
 		slog.Error("failed to update transaction", "id", id, "error", err)
 		httputil.InternalError(w)
@@ -218,6 +251,10 @@ func (h *Handler) updateStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !httputil.Validate(w, req) {
+		return
+	}
+
+	if !allowStatus(w, r, req.Status) {
 		return
 	}
 

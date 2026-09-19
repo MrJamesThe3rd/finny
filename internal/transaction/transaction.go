@@ -24,6 +24,22 @@ const (
 	StatusNoInvoice      Status = "no_invoice"
 )
 
+// OwnerOnlyStatus reports whether moving a transaction to s is reserved to an
+// organization's owner.
+//
+// no_invoice is the assertion that suppresses a movement from the
+// missing-invoice report — the mechanism by which an undocumented expense
+// disappears from view — and draft unpublishes a movement the accountant may
+// already have worked from. Both are irreversible in practice; pending_invoice
+// and complete are not.
+//
+// This function is deliberately pure and knows nothing about roles or
+// organizations: the comparison happens at the HTTP boundary, which holds both
+// sides. See knowledge-base.md §4.
+func OwnerOnlyStatus(s Status) bool {
+	return s == StatusNoInvoice || s == StatusDraft
+}
+
 // Transaction represents a financial transaction.
 type Transaction struct {
 	ID             uuid.UUID

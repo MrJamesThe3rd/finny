@@ -12,8 +12,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"github.com/MrJamesThe3rd/finny/internal/auth"
 	"github.com/MrJamesThe3rd/finny/internal/document"
+	finnyMiddleware "github.com/MrJamesThe3rd/finny/internal/http/middleware"
 	"github.com/MrJamesThe3rd/finny/internal/httputil"
 	"github.com/MrJamesThe3rd/finny/internal/transaction"
 )
@@ -31,14 +31,20 @@ func NewHandler(docSvc *document.Service, txSvc *transaction.Service, registry *
 func (h *Handler) TransactionDocumentRoutes(r chi.Router) {
 	r.Post("/", h.uploadDocument)
 	r.Get("/", h.downloadDocument)
-	r.Delete("/", h.deleteDocument)
+	// Owner-only: documents are hard-deleted and the Paperless Delete is a
+	// no-op, so the file orphans while every link to it vanishes.
+	r.With(finnyMiddleware.RequireOwner).Delete("/", h.deleteDocument)
 }
 
 func (h *Handler) BackendRoutes(r chi.Router) {
 	r.Get("/", h.listBackends)
-	r.Post("/", h.createBackend)
-	r.Patch("/{id}", h.updateBackend)
-	r.Delete("/{id}", h.deleteBackend)
+
+	r.Group(func(r chi.Router) {
+		r.Use(finnyMiddleware.RequireOwner)
+		r.Post("/", h.createBackend)
+		r.Patch("/{id}", h.updateBackend)
+		r.Delete("/{id}", h.deleteBackend)
+	})
 }
 
 // ── Document upload ────────────────────────────────────────────────────────────
@@ -231,7 +237,6 @@ func (h *Handler) createBackend(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg := &document.BackendConfig{
-		UserID:  auth.UserID(r.Context()),
 		Type:    req.Type,
 		Name:    req.Name,
 		Config:  req.Config,
