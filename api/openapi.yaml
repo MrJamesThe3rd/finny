@@ -20,6 +20,16 @@ tags:
     description: Export transactions and documents as a zip archive
   - name: Backends
     description: Manage document storage backends (Paperless, local filesystem)
+  - name: Organizations
+    description: Organizations and their memberships — the tenant boundary
+
+# Every operation below needs both: a bearer token for identity, and the
+# organization header for scope. Declared as security schemes rather than as a
+# header parameter on each path, so the generated client does not demand
+# X-Org-ID at every call site — the API client sets it once, in middleware.
+security:
+  - bearerAuth: []
+    orgHeader: []
 
 paths:
   /transactions:
@@ -473,7 +483,115 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /orgs:
+    get:
+      operationId: listOrgs
+      summary: List the organizations the caller belongs to
+      description: >
+        Outside the organization gate: a user with no organization yet must be
+        able to reach this. Returns an empty array in that case.
+      tags: [Organizations]
+      responses:
+        '200':
+          description: Organizations
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Organization'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      operationId: createOrg
+      summary: Create an organization owned by the caller
+      tags: [Organizations]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOrgRequest'
+      responses:
+        '201':
+          description: Organization created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Organization'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /orgs/members:
+    post:
+      operationId: addOrgMember
+      summary: Grant a user access to the active organization
+      description: >
+        Owner-only. The organization is the one in X-Org-ID rather than a path
+        segment: the caller's role is resolved from that header, so a
+        path-addressed form would need both to agree.
+      tags: [Organizations]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddMemberRequest'
+      responses:
+        '204':
+          description: Member added
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /orgs/members/{userID}:
+    delete:
+      operationId: revokeOrgMember
+      summary: Revoke a member's access to the active organization
+      description: >
+        Owner-only. Refuses to revoke an organization's last active owner,
+        which would permanently lock its owner-only routes.
+      tags: [Organizations]
+      parameters:
+        - name: userID
+          in: path
+          required: true
+          description: User UUID
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Membership revoked
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    orgHeader:
+      type: apiKey
+      in: header
+      name: X-Org-ID
+      description: >
+        The organization this request is scoped to. Validated per request
+        against the caller's memberships; 400 when absent or malformed, 403
+        when the caller is not an active member.
+
   parameters:
     TransactionID:
       name: id
@@ -511,6 +629,15 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
+    Forbidden:
+      description: >
+        Not permitted. ORG_FORBIDDEN when the caller is not an active member of
+        the organization — identical whether it is absent or simply not theirs.
+        ROLE_FORBIDDEN when the action is restricted to the organization's owner.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
     InternalError:
       description: Internal server error
       content:
@@ -519,6 +646,48 @@ components:
             $ref: '#/components/schemas/ErrorResponse'
 
   schemas:
+    OrgRole:
+      type: string
+      enum: [owner, accountant]
+
+    Organization:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        nif:
+          type: string
+          description: >
+            Portuguese tax number. Optional and not unique — a personal
+            organization has none, and a non-PT client has a different
+            identifier. Validated when present.
+        created_at:
+          type: string
+          format: date-time
+      required: [id, name, created_at]
+
+    CreateOrgRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        nif:
+          type: string
+      required: [name]
+
+    AddMemberRequest:
+      type: object
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        role:
+          $ref: '#/components/schemas/OrgRole'
+      required: [user_id, role]
+
     TransactionType:
       type: string
       enum: [income, expense]
