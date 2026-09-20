@@ -3,15 +3,21 @@
 Durable reference for what finny is, what it does today, and the domain facts that
 shape it. Future work lives in [roadmap.md](roadmap.md).
 
-Last verified: 2026-09-17.
+Last verified: 2026-09-20 — tenancy, audit and the frontend org switcher are in
+`main` and were checked against a running stack.
 
 ---
 
 ## 1. Purpose
 
-finny is **bookkeeping and invoice reconciliation for a Portuguese company** —
-VibrantGarden Unipessoal, Lda (NIF 517948974), banking with CGD. It is not a
-personal finance app.
+finny is **bookkeeping and invoice reconciliation**, built for a Portuguese
+company — VibrantGarden Unipessoal, Lda (NIF 517948974), banking with CGD.
+
+It is not a budgeting or personal-spending app. It *is* possible to keep a
+personal set of books in it: since tenancy landed, the unit of scope is an
+**organization**, which may be a company or a personal account, and NIF is
+optional for exactly that reason. What finny does not do is categorise spending
+for its own sake — every feature serves "which movement is missing a fatura".
 
 The problem it exists to solve: every company movement must be justified by a
 valid *fatura*. Today that reconciliation happens quarterly, manually, and late —
@@ -32,10 +38,13 @@ no invoice (taxes, social security, transfers, salary).
 
 ## 2. Who uses it
 
-- **Today:** the company owner, single user.
-- **Intended:** accountants as *users*, not just recipients. Each company is an
-  "entity"; an accountant is granted access to one or more entities and may bring
-  other clients. This is the practice→client model that Dext and Hubdoc use.
+- **Today:** the company owner, single user in practice.
+- **Supported since the tenancy work:** accountants as *users*, not just
+  recipients. The tenant is an **organization**; a **membership** grants a user
+  `owner` or `accountant` access to one, and an accountant may hold memberships
+  in several. This is the practice→client model that Dext and Hubdoc use.
+- The word is "organization", never "entity" (which is the DDD term for any
+  object with identity) and never "company" (books may be personal).
 
 ## 3. What we have today
 
@@ -44,22 +53,32 @@ no invoice (taxes, social security, transfers, salary).
 | Area | State |
 |---|---|
 | HTTP API | chi router, `/api/v1`, JWT-authenticated except `/auth` |
-| Persistence | PostgreSQL via pgx/v5, Goose migrations (8) |
+| Persistence | PostgreSQL via pgx/v5, Goose migrations (9) |
 | Auth | JWT HS256 access tokens + hashed refresh tokens, bcrypt passwords, admin flag |
+| **Tenancy** | **Organizations + memberships; every scoped row carries `org_id`; `X-Org-ID` per request** |
+| **Audit** | **Append-only `audit_log`, written in the same transaction as each change** |
 | Import | CGD CSV, three auto-detected column layouts |
 | Documents | Pluggable backends — Paperless-ngx and local FS |
 | Matching | Learned raw→preferred description mappings |
 | Export | Filter period, download documents, generate summary |
 | Commands | `cmd/api`, `cmd/seed` |
-| Tests | 6 packages with tests, all passing |
+| Tests | 12 packages with tests (21 files), all passing; tenant isolation runs against a real Postgres via testcontainers under plain `make test` |
 
 ### Frontend (`finny-web/`) — React + TypeScript
 
 Vite, TanStack Query, Zustand (auth + theme), react-router v6, `openapi-fetch`
-with types generated from the OpenAPI spec. Vitest + MSW v2: 12 test files, 51
+with types generated from the OpenAPI spec. Vitest + MSW v2: 15 test files, 73
 tests passing.
 
 Routes: `/login`, `/transactions`, `/import`, `/export`, `/settings/backends`.
+
+The API client sets `Authorization` and `X-Org-ID` in middleware, refreshes the
+access token ~30s before expiry (single-flight, because the server rotates
+refresh tokens on use), and clears the stored organization on a
+`403 ORG_FORBIDDEN`. The organization picker is a native `<select>` in the
+sidebar; switching calls `resetQueries()` — **not** `clear()`, which empties the
+cache without telling mounted queries to refetch and leaves the previous
+organization's rows on screen.
 
 ### Repository layout — important
 
@@ -91,6 +110,8 @@ internal/http/<domain>/handler.go   chi handlers calling the service
 
 | Package | Role |
 |---|---|
+| `org` | `Organization`, `Membership`, `Role`, NIF mod-11; the **one** org ctx accessor |
+| `audit` | `Entry` + `Record(ctx, tx, entry)`; append-only, takes a `*sql.Tx` on purpose |
 | `auth` | Claims, User, RefreshToken; `UserID(ctx)` / `WithUserID(ctx, id)` |
 | `transaction` | Core domain, import batching, duplicate detection |
 | `document` | `Backend` interface, `Registry`, multi-backend Service |
@@ -105,13 +126,61 @@ internal/http/<domain>/handler.go   chi handlers calling the service
 
 ```
 /api/v1/auth                     public
-/api/v1/admin/users              admin only
-/api/v1/transactions             + /{id}/document
-/api/v1/import
-/api/v1/matching
-/api/v1/export
-/api/v1/backends
+/api/v1/admin/users              admin only          — outside the org gate
+/api/v1/orgs                     list / create       — outside the org gate
+/api/v1/orgs/members             owner-only, addressed by X-Org-ID
+/api/v1/transactions             + /{id}/document    ┐
+/api/v1/import                                       │ all org-scoped:
+/api/v1/matching                                     │ RequireOrg applies
+/api/v1/export                                       │
+/api/v1/backends                                     ┘
 ```
+
+`/orgs` and `/admin/users` sit outside `RequireOrg` deliberately: a user who
+belongs to no organization must still be able to list and create one, and
+identity is not tenanted.
+
+### Tenancy and authorization
+
+The tenant boundary is the organization. Read this before touching any store.
+
+- **The active organization travels in an `X-Org-ID` header**, validated per
+  request against `memberships` (Xero's shape). Not a JWT claim — so revocation
+  is immediate rather than up to a token lifetime — and not a path segment, so
+  no route, spec path or generated type had to change.
+- **`middleware.RequireOrg` is the single authorization gate.** Missing header
+  → 400 `ORG_REQUIRED`; malformed → 400 `ORG_INVALID`; no membership *or*
+  revoked *or* no such organization → 403 `ORG_FORBIDDEN`, all identical, so the
+  endpoint is never an existence oracle for someone else's books.
+- **Scoping is ambient**: stores read `org.OrgID(ctx)`. It returns an **error**
+  when ctx carries no membership — never `uuid.Nil` — so an unscoped query fails
+  loudly instead of returning an empty result set. There is exactly one
+  accessor; adding an infallible one rebuilds the bug it was designed out of.
+- **`document_locations` has no `org_id`.** It is scoped by an `EXISTS` join
+  through `documents`, so a second copy of the owner cannot drift from the first.
+- **Roles**: `owner` and `accountant`. Owner-only: `no_invoice` and `draft`
+  statuses, deleting transactions and documents, backend config writes, member
+  management. An accountant *may* push a movement back to `pending_invoice`.
+  The policy is a pure `transaction.OwnerOnlyStatus(Status)` compared at the
+  HTTP boundary — `transaction` must never import `org.Role`.
+  **Two paths write status**: `PATCH /transactions/{id}/status` and
+  `PATCH /transactions/{id}`, which infers status from the `no_invoice` flag.
+  Both are gated; gating only the first leaves the policy bypassable.
+- **Audit**: every state change writes its `audit_log` row in the **same
+  transaction** as the change, after a `SELECT … FOR UPDATE` where a prior value
+  is needed. Creation is audited too. The upload-rollback cleanup path uses an
+  unaudited `PurgeDocument`, because a delete row there is indistinguishable
+  from a user destroying a document someone relied on. Backend audit rows never
+  contain the config JSONB — that holds credentials.
+- **`memberships` is append-only**: revocation sets `revoked_at`, rows are never
+  deleted, `user_id` is `ON DELETE RESTRICT`. Consequences: `RevokeMember`
+  refuses an organization's last active owner, and `DeleteUser` returns 409 for
+  any user who holds a membership, active or revoked.
+- **Caching**: scoped responses carry `Vary: X-Org-ID` and
+  `Cache-Control: no-store`. A body that depends on a request header must not be
+  cached against the URL alone. `X-Org-ID` is in the CORS `AllowedHeaders` —
+  without it every browser request fails preflight before reaching Go, and curl
+  cannot catch that.
 
 ### Document storage
 
@@ -294,14 +363,24 @@ with my NIF?"), not a retrieval mechanism — and it only ever covers the PT tai
 
 | Gap | Detail |
 |---|---|
-| `DefaultUserID` hardcoded | 3 sites: `auth/auth.go`, `cmd/api` seedCtx, `cmd/seed`. Blocks multi-user. |
-| No entity/tenancy model | Scoping is per `user_id`; accountants-as-users needs entity + membership. |
+| No rate limiting anywhere | `/auth/login` accepts unlimited attempts. bcrypt cost 12 slows an attacker; nothing stops them. |
+| No security headers | No HSTS, `X-Content-Type-Options`, frame options or CSP on any response. |
+| Server has no timeouts | `cmd/api/main.go` is a bare `ListenAndServe`: no read/write timeouts, no graceful shutdown, no health route. |
+| No CI | `.github/` does not exist. `make test` is the only gate, run by hand. |
+| Tokens live in `localStorage` | An XSS now reaches every organization an accountant serves, not one company's books. |
+| No pagination | `ListTransactions` returns every row for the organization on every load. |
 | Cross-export duplicates | `FindDuplicates` is exact-match only; see §6. |
 | No account dimension | Schema has no account/card column, so sources cannot be separated. |
 | Backends are write-only | `Backend` has no List/Search, so finny cannot see documents Paperless ingested by other means. |
 | `AttachFromURL` is crude | Requires pasting a Paperless URL; hardcodes `Filename: "invoice"` and `application/pdf`, fetches no metadata. |
 | Paperless `Delete` is a no-op | Deleting in finny orphans the document in Paperless. |
 | No VAT, category, or supplier NIF | Deliberate for now — see the open question below. |
+| `/import/confirm` re-checks nothing | `CreateBatch` runs with no duplicate check on whatever params the client sends, so dedup is bypassable. |
+| Export collides on filenames | Two documents sharing a name silently truncate each other; the accountant can receive one transaction's invoice standing in for another's. |
+| Export streams 200 before walking | A mid-walk error yields a truncated zip with no error signal. Export also ignores `ListFilter.Status`. |
+| `?force=true` backend delete 500s | `document_locations.backend_id` has no `ON DELETE`, so the force path is an FK violation. |
+| `AttachDocument` trusts the document id | It never checks the document belongs to the caller's organization. Unreachable today; an unenforced invariant. |
+| No period close | Nothing stops re-importing an overlapping window or flipping a status after the accountant filed from it. |
 
 ## 8. Open questions
 
