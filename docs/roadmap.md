@@ -3,7 +3,7 @@
 Planned work, in intended order. Current state and domain facts live in
 [knowledge-base.md](knowledge-base.md).
 
-Written 2026-09-17.
+Written 2026-09-17. Phase 3 marked done and the hardening pass added 2026-09-20.
 
 ---
 
@@ -73,18 +73,97 @@ before searching it is useful.
 
 ---
 
-## Phase 3 — Entity and membership
+## Phase 3 — Organizations and membership ✅ **Done**
 
-Turn finny into the accountant-facing tool.
+Shipped 2026-09-20, in five PRs: backend tenancy, its test suite, the OpenAPI
+contract, the frontend switcher, and token refresh. See knowledge-base §4
+"Tenancy and authorization" for the resulting shape.
 
-- `entity` (company, NIF) as the tenant boundary.
-- `membership` (user × entity × role: owner | accountant).
-- JWT carries entity context; scoping moves from `user_id` to `entity_id` across
-  transactions, invoices and description mappings.
-- Delete `DefaultUserID`.
+What landed: `organizations` + `memberships`, `org_id` on the four scoped
+tables, an append-only `audit_log` written in the same transaction as every
+change, `X-Org-ID` validated per request, owner/accountant roles, the
+`no_invoice` policy on **both** status-writing paths, and `DefaultUserID` gone.
+Verified end-to-end against a live stack: 43/43 checks, plus a browser pass.
 
-**Note:** cheapest while there is one user and little data — the cost of this
-phase grows with every row added before it.
+Two corrections to the original sketch, both deliberate: the tenant is an
+**organization** (not "entity" — a DDD collision — and not "company", since
+books may be personal), and the org travels in a **header**, not the JWT, so
+revocation is immediate rather than bounded by token lifetime.
+
+---
+
+## Phase 3.5 — Hardening pass ← **next up**
+
+The tenancy work added a second party to the trust model: an accountant now
+reaches several organizations' books from one session. That changes what a bug
+costs, so harden before building further features.
+
+Run each item against the same discipline used for the Go dependencies —
+OpenSSF scorecard, release cadence, contributor count — and against the house
+rule that a dependency must beat "a few lines of our own". The frontend has
+**six** runtime dependencies today; that leanness is an asset, not an accident.
+
+### Security — backend
+
+- **No rate limiting on `/auth/login`.** Unlimited attempts; bcrypt cost 12 is
+  the only brake. Highest-value single fix.
+- **No security headers** on any response — HSTS, `X-Content-Type-Options`,
+  frame options, CSP.
+- **`cmd/api/main.go` is a bare `ListenAndServe`** — no read/write timeouts, no
+  graceful shutdown, no health route.
+- **Refresh-token replay is undetected.** Rotation exists; presenting an
+  already-rotated token should revoke the whole family, not just fail.
+- Validate `AUTH_JWTSECRET` length at startup; consider `iss`/`aud` claims.
+- Body-size limits for JSON (multipart is already capped); DB statement timeouts.
+- Password policy is "at least 8 characters".
+
+### Security — frontend
+
+- **Tokens live in `localStorage`.** The honest fix is an httpOnly refresh
+  cookie plus a CSRF strategy, which is a backend change too. Decide
+  deliberately; it is the single biggest change to the XSS blast radius.
+- No CSP for the SPA. No error boundary — a thrown render error blanks the app.
+- Two tabs refreshing concurrently still race; one gets signed out.
+
+### Third-party libraries to evaluate (frontend)
+
+- **Forms + validation** — `react-hook-form` + `zod`. Forms are hand-rolled
+  `useState` today and `BackendsPage` validates JSON by hand.
+- **`react-error-boundary`** — small, and there is nothing in its place.
+- **Date handling** — `date-fns` (or `Temporal` once it is broadly available);
+  `lib/format.ts` hand-rolls formatting.
+- **TanStack Table / Virtual** — only *after* pagination exists; not before.
+
+### Cleanup
+
+- **`importer.Importer` is an interface with one implementation** — design
+  principle #1 says delete it until a second exists. `importer.Service` is a
+  20-line switch with no ctx, no repo, no state.
+- `matching.Repository` has no `go:generate`, no mock, no test.
+- `export` depends on concrete services rather than interfaces.
+- `_ = docstore.New` in `export/service_test.go` is a hack to satisfy an import.
+- **~25 pre-existing lint findings** (errcheck, ineffassign, staticcheck) and no
+  `.golangci.yaml`, so `make lint` exits non-zero on a clean tree.
+- **Drop `saintfish/chardet`** — scorecard 1.9, zero releases, untouched since
+  2023, and it parses untrusted uploaded bytes. ~12-line deletion; every charset
+  it returns is already handled except Turkish ISO-8859-9.
+- **Replace `kelseyhightower/envconfig`** — no release since 2019. `caarlos0/env`
+  v11 is active; one file, struct tags only.
+
+### Performance
+
+- **No pagination.** `ListTransactions` returns every row for the organization
+  on every load. Do this before any table library.
+- Composite index on `(org_id, date)` to match the list-and-filter query.
+- `POST /export` downloads every document to disk just to build a text summary,
+  then deletes them — an amplification vector against the tenant's own Paperless.
+- No retention or growth plan for `audit_log`.
+- Frontend ships as one bundle; no code splitting.
+
+### Also
+
+- **There is no CI.** `.github/` does not exist and `make test` is run by hand.
+  Cheap, and it is what keeps every item above from regressing.
 
 ---
 
@@ -114,6 +193,20 @@ Small, independent, do when convenient:
   **if** the card export is ever imported. Confirm first.
 - Account dimension on transactions, needed for per-source separation and
   transfer detection.
+- `/import/confirm` re-checks nothing, so dedup is bypassable by the client.
+- Export collides on filenames (two documents sharing a name truncate each
+  other), streams `200` before walking so a mid-walk error yields a truncated
+  zip, and ignores `ListFilter.Status`.
+- `?force=true` on backend delete can never work — `document_locations.backend_id`
+  has no `ON DELETE`, so it is an FK violation and a 500.
+- `AttachDocument` never checks the document belongs to the caller's
+  organization. Unreachable today; an unenforced invariant.
+- **Period close / lock** `(org_id, period_start, period_end, locked_at)`. Not a
+  VAT feature — records integrity. Nothing currently stops re-importing an
+  overlapping CGD window or flipping a status after the accountant filed from it.
+- Postgres RLS as defence in depth, once store calls run through a per-request
+  connection or transaction. The audit work already moved several methods onto
+  transactions, which shortens this.
 
 ---
 
@@ -127,6 +220,7 @@ Decided, with reasons — revisit only if a reason changes.
 | **Supplier portal scraping** | Brittle, per-supplier, breaks constantly. Amazon's bulk download replaces the only case that mattered. |
 | **e-Fatura import** | Parked. Unverified for an Lda, covers only the PT tail while most card spend is foreign, and is a validity check rather than retrieval. Revisit after the two-minute portal check. |
 | **TUI** | Removed 2026-09-16. Superseded by the SPA, and it bypassed the API to talk straight to the database. |
+| **PSD2 / bank-feed aggregation** | **GoCardless Bank Account Data (ex-Nordigen) closed to new signups in July 2025 and is winding down.** The self-serve EU replacement is **Enable Banking**; direct CGD via SIBS needs TPP licensing plus eIDAS (€2k+/yr). Constraints either way: 90-day consent re-auth, ≤24 months of history, bank rate limits as low as 4 calls/day/account. Revisit only if manual CSV import becomes the bottleneck. Note a bank connection is authorised **per company**, so connector config would be org-scoped — the same shape as `document_backends`. |
 
 ---
 
